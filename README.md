@@ -35,7 +35,7 @@ By using OSPF on Unifi, this may not allow you to use the Unifi Site Magic as it
 On your Unifi Gateway, you will need to configure the following:
 
 - Create two networks/VLANs
-  - One for the Outside network for for pfSense to connect to the Internet
+  - One for the Outside network for pfSense to connect to the Internet
   - One for the Inside network for pfSense to peer with the Unifi Gateway with OSPF
   - Both networks should use static IP addresses
   - In the example below we will use the following IP ranges:
@@ -311,7 +311,7 @@ O   192.168.221.0/24 [110/1] is directly connected, br221, weight 1, 2d13h09m
 
 ## Tailscale DNS Configuration
 
-If you want to leverage Tailscale DNS for your network, you can configure your DNS server to forward reqeusts for your tailnet domain to the Tailscale DNS server.
+If you want to leverage Tailscale DNS for your network, you can configure your DNS server to forward requests for your tailnet domain to the Tailscale DNS server.
 
 See the following guides for more information:
 
