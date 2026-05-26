@@ -1,0 +1,181 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <defs>
+    <marker id="bgpArrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0D9488"/>
+    </marker>
+    <marker id="bgpArrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0058D4"/>
+    </marker>
+    <filter id="bgpBoxShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2.5"/>
+      <feOffset dx="0" dy="2" result="o"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.12"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="800" fill="#F8FAFC"/>
+
+  <text x="640" y="40" text-anchor="middle" font-size="22" font-weight="700" fill="#0F172A">BGP Peering Detail</text>
+  <text x="640" y="62" text-anchor="middle" font-size="13" fill="#64748B">Prefix filtering and active / standby preference via MED and local-preference</text>
+
+  <!-- ts-home1 box (ACTIVE) -->
+  <g filter="url(#bgpBoxShadow)">
+    <rect x="50" y="120" width="290" height="440" rx="10" fill="#FFFFFF" stroke="#A81D33" stroke-width="2"/>
+    <path d="M 50 130 A 10 10 0 0 1 60 120 L 330 120 A 10 10 0 0 1 340 130 L 340 154 L 50 154 Z" fill="#A81D33"/>
+    <text x="68" y="144" font-size="14" font-weight="700" fill="#FFFFFF">ts-home1</text>
+    <rect x="250" y="126" width="84" height="20" rx="10" fill="#10B981"/>
+    <text x="292" y="139" text-anchor="middle" font-size="10" font-weight="700" fill="#FFFFFF">ACTIVE</text>
+
+    <text x="70" y="184" font-size="12" font-weight="700" fill="#0F172A">AS 65001</text>
+    <text x="70" y="202" font-size="11" fill="#475569">router-id 192.168.221.11</text>
+    <text x="70" y="220" font-size="11" fill="#475569">peer 192.168.221.1</text>
+
+    <line x1="70" y1="238" x2="320" y2="238" stroke="#E2E8F0" stroke-width="1"/>
+
+    <text x="70" y="258" font-size="11" font-weight="700" fill="#0F172A">Prefix lists</text>
+    <text x="70" y="276" font-size="10" fill="#475569">lan: 192.168.0.0/16 ge 16</text>
+    <text x="70" y="292" font-size="10" fill="#475569">tailscale: 100.64.0.0/10 ge 10</text>
+
+    <text x="70" y="318" font-size="11" font-weight="700" fill="#0F172A">Filters on UniFi Gateway peer</text>
+    <text x="70" y="336" font-size="10" fill="#475569">in: prefix-list lan</text>
+    <text x="70" y="352" font-size="10" fill="#475569">out: prefix-list tailscale</text>
+
+    <line x1="70" y1="370" x2="320" y2="370" stroke="#E2E8F0" stroke-width="1"/>
+
+    <text x="70" y="390" font-size="11" font-weight="700" fill="#0F172A">Origin of tailscale prefix</text>
+    <text x="70" y="408" font-size="10" fill="#475569">ip route 100.64.0.0/10 Null0</text>
+    <text x="70" y="424" font-size="10" fill="#475569">redistribute static</text>
+    <text x="70" y="440" font-size="10" fill="#475569">  route-map tailscale</text>
+
+    <line x1="70" y1="460" x2="320" y2="460" stroke="#E2E8F0" stroke-width="1"/>
+
+    <text x="70" y="480" font-size="11" font-weight="700" fill="#10B981">Path attributes</text>
+    <text x="70" y="498" font-size="10" fill="#475569">default (no MED, no LP override)</text>
+    <text x="70" y="514" font-size="10" fill="#475569">arrives at UniFi Gateway with LP 100,</text>
+    <text x="70" y="530" font-size="10" fill="#475569">no MED set — the preferred path.</text>
+  </g>
+
+  <!-- UniFi Gateway box -->
+  <g filter="url(#bgpBoxShadow)">
+    <rect x="470" y="120" width="340" height="440" rx="10" fill="#FFFFFF" stroke="#0058D4" stroke-width="2"/>
+    <path d="M 470 130 A 10 10 0 0 1 480 120 L 800 120 A 10 10 0 0 1 810 130 L 810 154 L 470 154 Z" fill="#0058D4"/>
+    <text x="640" y="144" text-anchor="middle" font-size="14" font-weight="700" fill="#FFFFFF">UniFi Gateway</text>
+
+    <text x="490" y="184" font-size="12" font-weight="700" fill="#0F172A">AS 65000</text>
+    <text x="490" y="202" font-size="11" fill="#475569">router-id 192.168.0.1</text>
+    <text x="490" y="220" font-size="11" fill="#475569">inside peer 192.168.221.1</text>
+
+    <line x1="490" y1="238" x2="790" y2="238" stroke="#E2E8F0" stroke-width="1"/>
+
+    <text x="490" y="258" font-size="11" font-weight="700" fill="#0F172A">Prefix lists</text>
+    <text x="490" y="276" font-size="10" fill="#475569">lan: 192.168.0.0/16 ge 16</text>
+    <text x="490" y="292" font-size="10" fill="#475569">tailscale: 100.64.0.0/10 ge 10</text>
+
+    <text x="490" y="318" font-size="11" font-weight="700" fill="#0F172A">Filters on each VM peer</text>
+    <text x="490" y="336" font-size="10" fill="#475569">.221.11/.12 in: prefix-list tailscale</text>
+    <text x="490" y="352" font-size="10" fill="#475569">.221.11/.12 out: prefix-list lan</text>
+
+    <line x1="490" y1="370" x2="790" y2="370" stroke="#E2E8F0" stroke-width="1"/>
+
+    <text x="490" y="390" font-size="11" font-weight="700" fill="#D97706">Route-maps · ts-home2 only</text>
+    <text x="490" y="408" font-size="10" fill="#475569">ts-home2-in:  set local-preference 50</text>
+    <text x="490" y="424" font-size="10" fill="#475569">ts-home2-out: set metric 200 (MED)</text>
+
+    <line x1="490" y1="442" x2="790" y2="442" stroke="#E2E8F0" stroke-width="1"/>
+
+    <text x="490" y="462" font-size="11" font-weight="700" fill="#0F172A">Origin of lan prefix</text>
+    <text x="490" y="480" font-size="10" fill="#475569">redistribute connected</text>
+    <text x="490" y="496" font-size="10" fill="#475569">  filtered out by prefix-list lan</text>
+    <text x="490" y="512" font-size="10" fill="#475569">  (covers every 192.168.x.x VLAN)</text>
+
+    <text x="490" y="538" font-size="11" font-weight="700" fill="#0F172A">Result of best-path</text>
+    <text x="490" y="554" font-size="10" fill="#475569">ts-home1 wins on LP (100 &gt; 50)</text>
+  </g>
+
+  <!-- ts-home2 box (STANDBY) -->
+  <g filter="url(#bgpBoxShadow)">
+    <rect x="940" y="120" width="290" height="440" rx="10" fill="#FFFFFF" stroke="#A81D33" stroke-width="2"/>
+    <path d="M 940 130 A 10 10 0 0 1 950 120 L 1220 120 A 10 10 0 0 1 1230 130 L 1230 154 L 940 154 Z" fill="#A81D33"/>
+    <text x="958" y="144" font-size="14" font-weight="700" fill="#FFFFFF">ts-home2</text>
+    <rect x="1132" y="126" width="92" height="20" rx="10" fill="#D97706"/>
+    <text x="1178" y="139" text-anchor="middle" font-size="10" font-weight="700" fill="#FFFFFF">STANDBY</text>
+
+    <text x="960" y="184" font-size="12" font-weight="700" fill="#0F172A">AS 65001</text>
+    <text x="960" y="202" font-size="11" fill="#475569">router-id 192.168.221.12</text>
+    <text x="960" y="220" font-size="11" fill="#475569">peer 192.168.221.1</text>
+
+    <line x1="960" y1="238" x2="1210" y2="238" stroke="#E2E8F0" stroke-width="1"/>
+
+    <text x="960" y="258" font-size="11" font-weight="700" fill="#0F172A">Prefix lists</text>
+    <text x="960" y="276" font-size="10" fill="#475569">lan: 192.168.0.0/16 ge 16</text>
+    <text x="960" y="292" font-size="10" fill="#475569">tailscale: 100.64.0.0/10 ge 10</text>
+
+    <text x="960" y="318" font-size="11" font-weight="700" fill="#0F172A">Filters on UniFi Gateway peer</text>
+    <text x="960" y="336" font-size="10" fill="#475569">in: prefix-list lan</text>
+    <text x="960" y="352" font-size="10" fill="#475569">    + route-map gateway-in</text>
+    <text x="960" y="368" font-size="10" fill="#475569">out: prefix-list tailscale</text>
+    <text x="960" y="384" font-size="10" fill="#475569">    + route-map gateway-out</text>
+
+    <line x1="960" y1="402" x2="1210" y2="402" stroke="#E2E8F0" stroke-width="1"/>
+
+    <text x="960" y="422" font-size="11" font-weight="700" fill="#D97706">Standby attributes</text>
+    <text x="960" y="440" font-size="10" fill="#475569">bgp default local-preference 200</text>
+    <text x="960" y="456" font-size="10" fill="#475569">gateway-in:  set local-preference 50</text>
+    <text x="960" y="472" font-size="10" fill="#475569">gateway-out: set metric 200</text>
+
+    <line x1="960" y1="490" x2="1210" y2="490" stroke="#E2E8F0" stroke-width="1"/>
+
+    <text x="960" y="510" font-size="11" font-weight="700" fill="#D97706">Path attributes outbound</text>
+    <text x="960" y="528" font-size="10" fill="#475569">arrives at UniFi Gateway with MED 200</text>
+    <text x="960" y="544" font-size="10" fill="#475569">→ standby until ts-home1 drops</text>
+  </g>
+
+  <!-- Arrows: ts-home1 ↔ UniFi Gateway -->
+  <g>
+    <line x1="340" y1="248" x2="468" y2="248" stroke="#0D9488" stroke-width="2.5" marker-end="url(#bgpArrowTeal)"/>
+    <text x="404" y="238" text-anchor="middle" font-size="10" font-weight="700" fill="#0D9488">100.64.0.0/10</text>
+    <text x="404" y="263" text-anchor="middle" font-size="9" fill="#0F766E">tailscale, default attrs</text>
+  </g>
+  <g>
+    <line x1="468" y1="430" x2="340" y2="430" stroke="#0058D4" stroke-width="2.5" marker-end="url(#bgpArrowBlue)"/>
+    <text x="404" y="420" text-anchor="middle" font-size="10" font-weight="700" fill="#0058D4">192.168.0.0/16</text>
+    <text x="404" y="445" text-anchor="middle" font-size="9" fill="#1E40AF">lan, default attrs</text>
+  </g>
+
+  <!-- Arrows: UniFi Gateway ↔ ts-home2 -->
+  <g>
+    <line x1="940" y1="248" x2="812" y2="248" stroke="#0D9488" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#bgpArrowTeal)"/>
+    <text x="876" y="238" text-anchor="middle" font-size="10" font-weight="700" fill="#0D9488">100.64.0.0/10</text>
+    <text x="876" y="263" text-anchor="middle" font-size="9" fill="#0F766E">tailscale (+ MED 200 from gateway-out)</text>
+    <rect x="828" y="275" width="96" height="22" rx="4" fill="#FEF3C7" stroke="#D97706" stroke-width="1"/>
+    <text x="876" y="290" text-anchor="middle" font-size="9" font-weight="700" fill="#92400E">UniFi sets LP 50 in</text>
+  </g>
+  <g>
+    <line x1="812" y1="430" x2="940" y2="430" stroke="#0058D4" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#bgpArrowBlue)"/>
+    <text x="876" y="420" text-anchor="middle" font-size="10" font-weight="700" fill="#0058D4">192.168.0.0/16</text>
+    <text x="876" y="445" text-anchor="middle" font-size="9" fill="#1E40AF">lan (+ MED 200 from UDM ts-home2-out)</text>
+    <rect x="828" y="455" width="96" height="22" rx="4" fill="#FEF3C7" stroke="#D97706" stroke-width="1"/>
+    <text x="876" y="470" text-anchor="middle" font-size="9" font-weight="700" fill="#92400E">ts-home2 sets LP 50 in</text>
+  </g>
+
+  <!-- Bottom annotation -->
+  <g transform="translate(50, 600)">
+    <rect x="0" y="0" width="1180" height="172" rx="10" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="20" y="26" font-size="13" font-weight="700" fill="#0F172A">How active / standby is enforced</text>
+
+    <circle cx="28" cy="48" r="4" fill="#10B981"/>
+    <text x="44" y="52" font-size="11" fill="#475569"><tspan font-weight="700" fill="#059669">UniFi Gateway best path to 100.64.0.0/10:</tspan> ts-home1 advertises with default LP 100; ts-home2 advertises and UniFi Gateway rewrites LP to 50 via <tspan font-family="ui-monospace, monospace" fill="#0F172A">route-map ts-home2-in</tspan>. Higher LP wins → traffic egresses via ts-home1.</text>
+
+    <circle cx="28" cy="76" r="4" fill="#D97706"/>
+    <text x="44" y="80" font-size="11" fill="#475569"><tspan font-weight="700" fill="#D97706">MED 200 outbound from ts-home2:</tspan> redundant tiebreaker if both sides ever had matching LP — ensures ts-home2 always loses the best-path race. UniFi Gateway also stamps the same MED on what it sends to ts-home2 (<tspan font-family="ui-monospace, monospace" fill="#0F172A">ts-home2-out</tspan>), making the standby intent symmetric.</text>
+
+    <circle cx="28" cy="104" r="4" fill="#0F766E"/>
+    <text x="44" y="108" font-size="11" fill="#475569"><tspan font-weight="700" fill="#0F766E">100.64.0.0/10 origin:</tspan> each VM installs a Null0 static route for the full Tailscale CGNAT block. FRR redistributes that static via <tspan font-family="ui-monospace, monospace" fill="#0F172A">route-map tailscale</tspan>, which matches <tspan font-family="ui-monospace, monospace" fill="#0F172A">prefix-list tailscale</tspan>, into BGP. The Tailscale daemon installs the actual /32 host routes inside that aggregate.</text>
+
+    <circle cx="28" cy="132" r="4" fill="#475569"/>
+    <text x="44" y="136" font-size="11" fill="#475569"><tspan font-weight="700">Failover behavior:</tspan> if ts-home1's BGP session drops, UniFi Gateway withdraws that path. ts-home2 becomes the only path, hold timers expire in ~9 s (3 s keepalive × 3), and traffic shifts automatically. No manual intervention.</text>
+
+    <text x="20" y="160" font-size="10" fill="#64748B" font-style="italic">All filters are bidirectional: only the LAN aggregate flows toward the VMs, only the Tailscale aggregate flows toward the UniFi Gateway — any leaked specifics are dropped.</text>
+  </g>
+</svg>

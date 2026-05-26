@@ -1,413 +1,656 @@
-# unifi-pfsense-tailscale
+# UniFi + Debian/FRR + Tailscale (BGP)
 
-Guide on how to integrate Unifi with pfSense and Tailscale using OSPF
+Run Tailscale as a subnet router behind a UniFi Gateway using two
+redundant Debian VMs. FRR's `bgpd` peers with the UniFi Gateway over eBGP; BGP path
+attributes pick one VM as active and one as standby, and failover is
+automatic when the active VM drops its session.
 
-## Introduction
+> **This repo used to document a pfSense + OSPF design.** It has been
+> rewritten end-to-end for Debian + FRR + eBGP. If you need the old guide,
+> check out a commit before this rewrite — git history is intact.
 
-This guide will show you how to integrate Unifi with pfSense and Tailscale using OSPF. This will allow you to reach devices in your tailnet from your Unifi network and vice versa.
+## Architecture
 
-### How It Works
+![Network topology](images/network-topology.svg)
 
-At a high level, the traffic flow looks like this:
+- `ts-home1` (active) and `ts-home2` (standby) are Debian 13 (Trixie) VMs
+  running on separate Proxmox hosts.
+- `ens18` is the WAN interface on **VLAN 220** (DHCP). Tailscale uses this
+  to reach the tailnet.
+- `ens19` is the inside interface on **VLAN 221**, a /24 BGP transit subnet.
+  The UniFi Gateway peers with each VM across this VLAN.
+- The VMs are **AS 65001**; the UniFi Gateway is **AS 65000**. eBGP exchanges
+  exactly two aggregates: `192.168.0.0/16` (LAN) and `100.64.0.0/10`
+  (Tailscale CGNAT).
+- The Tailscale daemon installs per-peer `/32` routes inside the
+  `100.64.0.0/10` aggregate. `iptables` masquerades LAN traffic to the VM's
+  Tailscale IP on the way out so peers that haven't accepted your subnet
+  routes can still send return traffic.
 
-```
-LAN Device → Unifi Gateway → (OSPF) → pfSense → (Tailscale tunnel) → Remote Device
-```
+### BGP design
 
-The Unifi Gateway handles your local network routing as usual. pfSense sits alongside it with two connections: one for internet access (WAN) and one peering with the Unifi Gateway via OSPF (LAN). Tailscale runs on pfSense and creates the overlay network to your remote devices.
+![BGP peering detail](images/bgp-topology.svg)
 
-OSPF is used to dynamically exchange routes between the Unifi Gateway and pfSense. pfSense advertises the Tailscale subnet (`100.64.0.0/10`) to the Unifi Gateway via OSPF, so your LAN devices know to route Tailscale-bound traffic through pfSense. In the other direction, pfSense learns all your Unifi network routes via OSPF, so it can route return traffic back to the correct VLAN.
+| Direction | Prefix(es) | Modifier | Effect |
+|---|---|---|---|
+| `ts-home1` → UniFi Gateway | `100.64.0.0/10` | default attrs | preferred at UniFi Gateway |
+| `ts-home2` → UniFi Gateway | `100.64.0.0/10` | UniFi Gateway applies `local-preference 50` (inbound) | demoted at UniFi Gateway |
+| UniFi Gateway → `ts-home1` | `192.168.0.0/16` | default attrs | normal return path |
+| UniFi Gateway → `ts-home2` | `192.168.0.0/16` | UniFi Gateway applies `metric 200` (MED, outbound) | tagged as standby |
 
-Since Tailscale nodes won't have routes back to your RFC 1918 address space, pfSense performs outbound NAT to translate your LAN source addresses to its own Tailscale IP. This makes return traffic work seamlessly — remote Tailscale devices see traffic coming from pfSense's Tailscale address and know how to respond.
+`prefix-list lan` permits `192.168.0.0/16 ge 16` only; `prefix-list tailscale`
+permits `100.64.0.0/10 ge 10` only. Both lists are mirrored on the UniFi Gateway
+and on the VMs so leaked specifics from either side are dropped. BGP timers
+are `3 9` (keepalive 3 s, hold 9 s) on every neighbor, giving sub-10-second
+failover.
 
-## Network Diagram
+## Address Plan
 
-![Network Diagram](images/network-diagram.png)
+| Element | Value |
+|---|---|
+| LAN aggregate (multiple VLANs) | `192.168.0.0/16` |
+| WAN transit VLAN | `192.168.220.0/24` (VLAN 220, DHCP) |
+| BGP transit VLAN | `192.168.221.0/24` (VLAN 221) |
+| UniFi Gateway inside peer | `192.168.221.1` |
+| `ts-home1` inside | `192.168.221.11` |
+| `ts-home2` inside | `192.168.221.12` |
+| Tailscale CGNAT | `100.64.0.0/10` |
+| UniFi Gateway AS | `65000` |
+| Debian VMs AS | `65001` |
 
 ## Requirements
 
-* A medium to advanced understanding of networking and routing protocols
-* pfSense (physical or virtual) with at least 2 interfaces or VLANs
-* Unifi Gateway
-* Tailscale tailnet
-* Tailscale client on a remote device
-* SSH access to pfSense and Unifi Gateway
+- A UniFi Gateway running a UniFi OS version with FRR/BGP support (works on all current models).
+- A virtualisation host (Proxmox is assumed here; anything that supports
+  Debian 13 will work). Two hosts if you want true HA across hardware.
+- A Tailscale tailnet and access to the admin console for route approval.
+- Two VLANs reachable from the UniFi Gateway — one for WAN egress to the VMs and
+  one for the BGP transit subnet.
 
 ## Not Covered
 
-* Installing pfSense
-* Installing a Unifi Gateway
-* Setting up a Tailscale tailnet
-* Installing Tailscale client on a remote device
+- Installing the UniFi Gateway or provisioning VLANs on UniFi.
+- Setting up a Tailscale tailnet.
+- Installing Tailscale clients on remote devices.
+- ACLs in Tailscale — see <https://tailscale.com/kb/1337/acl-syntax>.
 
 ## Important Notes
 
-By using OSPF on Unifi, this may not allow you to use Unifi Site Magic as it requires OSPF to be disabled.
+> The UniFi Gateway's `/etc/frr/frr.conf` **cannot** be edited directly on the CLI —
+> the controller will overwrite it. The BGP config below must be pasted into
+> the UniFi GUI (`Settings → Routing → BGP`) so the controller applies it
+> through the supported path.
 
-## Unifi Configuration
+## UniFi Gateway Configuration
 
-On your Unifi Gateway, you will need to configure the following:
+### BGP
 
-* Create two networks/VLANs
-  + One for the Outside network for pfSense to connect to the Internet
-  + One for the Inside network for pfSense to peer with the Unifi Gateway with OSPF
-  + Both networks should use static IP addresses
-  + In the example below we will use the following IP ranges:
-    - Tailscale tailnet: `100.64.0.0/10`
-    - Unifi Networks: `192.168.0.0/16`
-    - Outside network: `192.168.220.0/24`
-    - Inside network: `192.168.221.0/24`
-    - pfSense WAN IP: `192.168.220.11`
-    - pfSense LAN IP: `192.168.221.11`
-
-> **Note:** pfSense needs to be connected to both VLANs, either via two physical interfaces or two tagged VLANs on a single trunk port. If running pfSense as a VM, assign two virtual NICs — one on each VLAN.
-
-### Unifi OSPF Configuration
-
-Under Settings -> Routing -> OSPF tab, click on `Create New` and configure the following:
-
-* Area ID: `0.0.0.0`
-* Area Type: `Normal`
-* Network: `Inside network`
-* Networks: `pfSense Inside network`
-
-### Unifi IP Group Configuration
-
-Under Settings -> Profiles -> IP Groups, create a new IP group for Tailscale:
-
-* Profile Name: `Tailscale`
-* Type: `IPv4 Address/Subnet`
-* Address: `100.64.0.0/10`
-
-### Unifi Firewall Rule
-
-Under Settings -> Security -> Traffic & Firewall Rules, configure the following rule using advanced settings:
-
-* Type: `LAN In`
-* Name: `Allow LAN to Tailscale`
-* Action: `Accept`
-* Protocol: `All`
-* Source Type: `Network`
-* Network: `Your LAN network(s)`
-* Network Type: `IPv4 Subnet`
-* Destination Type: `Port/IP Group`
-* Address Group: `Tailscale`
-* Port Group: `Any`
-
-## pfSense Configuration
-
-On your pfSense, install the following packages:
-
-* FRR
-* Tailscale
-
-### pfSense Tailscale Configuration
-
-Under VPN -> Tailscale, connect your pfSense to the Tailscale tailnet.
-
-You can follow these instructions for setting up Tailscale on pfSense: <https://flemmingss.com/how-to-set-up-tailscale-on-pfsense/>
-
-Once Tailscale is up, make sure to advertise your routes to the Tailscale tailnet.
-
-You can optionally advertise as an exit node as well.
-
-![Tailscale Advertise Routes](images/pfsense-tailscale-routes.png)
-
-### Tailscale Configuration
-
-#### Tailscale Admin Console Settings
-
-On your Tailscale admin console:
-
-* Disable key expiry
-* Edit route settings to allow all subnets
-* Optionally, enable exit node
-
-![Tailscale Route Settings](images/tailscale-routes.png)
-
-#### Tailscale Access Control
-
-You can also edit your Access Control settings to allow all devices to communicate with each other. This can be customized to your needs so it will not be covered in this guide but you can follow the Tailscale documentation.
-
-<https://tailscale.com/kb/1337/acl-syntax>
-
-### pfSense FRR Configuration
-
-#### FRR Global Settings
-
-Under Services -> FRR Global/Zebra, configure the following:
-
-* Enable FRR
-* Master Password: `Your password`
-* Route Handling:
-  + Null Route
-  + Subnet: `100.64.0.0/10`
-  + Static Route Target: `None`
-  + Then click on `Add`
-
-![FRR Route Handling](images/frr-route-handling.png)
-
-#### FRR Prefix Lists
-
-Under Services -> FRR Global/Zebra -> Prefix Lists, configure the following:
-
-Click on `Add` and configure the following:
-
-* General Options
-  + IP Type: `IPv4`
-  + Name: `tailscale`
-  + Prefix List Entries:
-    - Sequence: `10`
-    - Action: `Permit`
-    - Network: `100.64.0.0/10`
-    - Minimum Prefix: `10`
-
-![FRR Prefix Lists](images/frr-prefix-list.png)
-
-#### FRR Route Maps
-
-Under Services -> FRR Global/Zebra -> Route Maps, configure the following:
-
-Click on `Add` and configure the following:
-
-* General Options
-  + Name: `tailscale`
-  + Action: `Permit`
-  + Sequence: `10`
-* Prefix Lists
-  + Match Prefix List: `tailscale`
-
-#### FRR OSPF
-
-Under Services -> FRR OSPF, configure the following:
-
-* Enable OSPF Routing
-* Log Adjacency Changes
-* Router ID: `The Static IP address of the pfSense interface that is connected to the Unifi Gateway on the Inside network`
-* Route Redistribution
-  + FRR Static Routes
-    - Redistribute FRR Static
-    - Metric: `10`
-    - Route Map: `tailscale`
-
-#### FRR OSPF Interfaces
-
-Under Services -> FRR OSPF -> Interfaces, configure the following by clicking on `Add`:
-
-* Interface: `lan`
-* Ignore MTU: `Checked`
-* Area: `0.0.0.0`
-
-### NAT Configuration
-
-Under Firewall -> NAT, configure the following:
-
-* Outbound NAT Mode: `Manual Outbound NAT rule generation`
-* Under mappings, click on `Add` and configure the following rule:
-
-  + Interface: `Tailscale`
-  + Address Family: `IPv4`
-  + Protocol: `Any`
-  + Source:
-    - Type: `Network or Alias`
-    - Source Network for the outbound NAT Mapping: `The IP range and mask of your networks on unifi (ex. 192.168.0.0/16)`
-  + Destination:
-    - Type: `Network or Alias`
-    - Destination Network for the outbound NAT Mapping: `100.64.0.0/10`
-  + Translation:
-    - Type: `Network or Alias`
-    - Address: `The Tailscale Tailnet IP address of your pfSense appliance (ex. 100.64.0.231/32)`
-
-> **Why NAT?** Tailscale nodes on your tailnet won't have routes back to your private RFC 1918 address space (e.g. `192.168.x.x`). By NATing outbound traffic to pfSense's Tailscale IP, remote devices see traffic originating from an address they can route back to, making bidirectional communication work seamlessly.
-
-![NAT Rule](images/nat-rule.png)
-
-Save the rule and apply the changes.
-
-**IMPORTANT: Make sure to move the rule to the top of the list.**
-
-### Firewall Rules
-
-Under Firewall -> Rules -> LAN, add a rule to allow traffic from the LAN to the Tailscale subnet:
-
-* Action: `Pass`
-* Interface: `LAN`
-* Address Family: `IPv4`
-* Protocol: `Any`
-* Source: `LAN net`
-* Destination: `Network or Alias` - `100.64.0.0/10`
-
-![Firewall Rule](images/firewall-rule-lan-tailscale.png)
-
-Save the rule and apply the changes.
-
-## OSPF Verification
-
-### pfSense
-
-SSH into your pfSense appliance and verify that the OSPF peering is working by running the following command:
+In the UniFi GUI, go to `Settings → Routing → BGP` and paste the following.
+Replace `192.168.0.1` with the router-id you want to advertise; the value
+below is a sensible default if your primary LAN sits in `192.168.0.0/24`.
 
 ```
-vtysh -c 'show ip ospf neighbor'
+router bgp 65000
+ bgp router-id 192.168.0.1
+ bgp listen limit 10
+ neighbor 192.168.221.11 remote-as 65001
+ neighbor 192.168.221.11 timers 3 9
+ neighbor 192.168.221.12 remote-as 65001
+ neighbor 192.168.221.12 timers 3 9
+ !
+ address-family ipv4 unicast
+  redistribute connected
+  neighbor 192.168.221.11 soft-reconfiguration inbound
+  neighbor 192.168.221.11 prefix-list tailscale in
+  neighbor 192.168.221.11 prefix-list lan out
+  neighbor 192.168.221.12 soft-reconfiguration inbound
+  neighbor 192.168.221.12 prefix-list tailscale in
+  neighbor 192.168.221.12 prefix-list lan out
+  neighbor 192.168.221.12 route-map ts-home2-in in
+  neighbor 192.168.221.12 route-map ts-home2-out out
+ exit-address-family
+exit
+!
+ip prefix-list lan seq 10 permit 192.168.0.0/16 ge 16
+ip prefix-list tailscale seq 10 permit 100.64.0.0/10 ge 10
+!
+route-map ts-home2-in permit 10
+ set local-preference 50
+!
+route-map ts-home2-out permit 10
+ set metric 200
 ```
 
-You should see the Unifi Gateway as a neighbor.
+## VM Build (Proxmox)
 
-```
-[2.7.2-RELEASE][root@pf1]/root: vtysh -c 'show ip ospf neigh'
+Create two VMs with identical specs, one per Proxmox host:
 
-Neighbor ID     Pri State           Up Time         Dead Time Address         Interface                        RXmtL RqstL DBsmL
-192.168.221.1     1 Full/DROther    2d12h07m          32.952s 192.168.221.1   vtnet1:192.168.221.11                0     0     0
-```
+| Setting | Value |
+|---|---|
+| OS | Debian 13 Trixie (netinstall) |
+| Machine | q35 |
+| BIOS | UEFI (OVMF) |
+| CPU | 1 vCPU |
+| RAM | 1 GB |
+| Disk | 8 GB |
+| `net0` (`ens18`) | VirtIO bridge → VLAN 220 (WAN) |
+| `net1` (`ens19`) | VirtIO bridge → VLAN 221 (inside) |
 
-To check that pfSense is learning routes from the Unifi Gateway, run the following command:
+Install with minimal/standard system utilities only — no desktop.
 
-```
-vtysh -c 'show ip route ospf'
-```
+## Debian Base Configuration
 
-You should see the routes that the Unifi Gateway is advertising.
+Do everything below on **both** VMs unless noted.
 
-```
-[2.7.2-RELEASE][root@pf1]/root: vtysh -c 'show ip route ospf'
-Codes: K - kernel route, C - connected, S - static, R - RIP,
-       O - OSPF, I - IS-IS, B - BGP, E - EIGRP, T - Table,
-       v - VNC, V - VNC-Direct, A - Babel, f - OpenFabric,
-       > - selected route, * - FIB route, q - queued, r - rejected, b - backup
-       t - trapped, o - offload failure
+### Hostname
 
-O>* 10.37.110.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O   100.64.0.0/10 [110/100] via 192.168.221.12, vtnet1, weight 1, 02w6d22h
-O>* 192.168.0.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O>* 192.168.2.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O>* 192.168.3.0/24 [110/20] via 192.168.221.12, vtnet1, weight 1, 22:24:43
-O>* 192.168.10.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O>* 192.168.25.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O>* 192.168.26.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O>* 192.168.40.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O>* 192.168.120.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O>* 192.168.200.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O>* 192.168.201.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O>* 192.168.202.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O   192.168.220.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O   192.168.221.0/24 [110/10] is directly connected, vtnet1, weight 1, 02w6d22h
-O>* 192.168.230.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O>* 192.168.231.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O>* 192.168.240.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O>* 192.168.241.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O>* 192.168.242.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
-O>* 192.168.254.0/24 [110/20] via 192.168.221.1, vtnet1, weight 1, 2d12h09m
+```bash
+# On ts-home1:
+hostnamectl set-hostname ts-home1
+
+# On ts-home2:
+hostnamectl set-hostname ts-home2
 ```
 
-### Unifi Gateway
-
-SSH into your Unifi Gateway and verify that the OSPF peering is working by running the following command:
+### `/etc/network/interfaces` — `ts-home1`
 
 ```
-vtysh -c 'show ip ospf neighbor'
+auto lo
+iface lo inet loopback
+
+auto ens18
+iface ens18 inet dhcp
+
+auto ens19
+iface ens19 inet static
+    address 192.168.221.11
+    netmask 255.255.255.0
 ```
 
-You should see the pfSense firewall as a neighbor.
+### `/etc/network/interfaces` — `ts-home2`
 
 ```
-root@Gateway:~# vtysh -c 'show ip ospf neighbor'
+auto lo
+iface lo inet loopback
 
-Neighbor ID     Pri State           Dead Time Address         Interface                        RXmtL RqstL DBsmL
-192.168.221.11    1 Full/DR           31.282s 192.168.221.11  br221:192.168.221.1                  0     0     0
+auto ens18
+iface ens18 inet dhcp
+
+auto ens19
+iface ens19 inet static
+    address 192.168.221.12
+    netmask 255.255.255.0
 ```
 
-To check that the Unifi Gateway is learning routes from pfSense, run the following command:
+> No default gateway on `ens19` — WAN (`ens18`) DHCP provides the default
+> route. Tailscale egresses via WAN. Adding a gateway to the inside
+> interface will black-hole tailnet traffic.
 
-```
-vtysh -c 'show ip route ospf'
-```
-
-```
-root@Gateway:~# vtysh -c 'show ip route ospf'
-Codes: K - kernel route, C - connected, S - static, O - OSPF,
-       B - BGP, T - Table, f - OpenFabric,
-       > - selected route, * - FIB route, q - queued, r - rejected, b - backup
-       t - trapped, o - offload failure
-
-O>* 100.64.0.0/10 [110/10] via 192.168.221.11, br221, weight 1, 2d13h09m
-O   192.168.221.0/24 [110/1] is directly connected, br221, weight 1, 2d13h09m
+```bash
+systemctl restart networking
 ```
 
-## Tailscale DNS Configuration
+### IP Forwarding
 
-If you want to leverage Tailscale DNS for your network, you can configure your DNS server to forward requests for your tailnet domain to the Tailscale DNS server.
+```bash
+cat > /etc/sysctl.d/99-forwarding.conf << 'EOF'
+net.ipv4.ip_forward = 1
+net.ipv4.conf.all.forwarding = 1
+net.ipv6.conf.all.forwarding = 1
+EOF
 
-For example, if you're running Unbound on pfSense (the default DNS resolver), you can add a domain override under Services -> DNS Resolver -> Domain Overrides:
+sysctl --system
+```
 
-* Domain: `ts.net` (or your tailnet's MagicDNS domain)
-* Lookup Server IP Address: `100.100.100.100`
-* Description: `Tailscale MagicDNS`
+## FRR Installation
 
-This allows LAN clients to resolve Tailscale hostnames (e.g. `myphone.tail1234.ts.net`) through your local DNS infrastructure.
+```bash
+apt update && apt install -y frr frr-pythontools
+```
 
-See the following guides for more information:
+### `/etc/frr/daemons`
 
-* <https://tailscale.com/kb/1081/magicdns>
-* <https://tailscale.com/kb/1381/what-is-quad100>
+Set `zebra` and `bgpd` to `yes`; leave the rest as-is:
 
-## Optional Configurations
+```
+zebra=yes
+bgpd=yes
+```
 
-### pfSense High Availability
+## FRR Configuration
 
-If you want to have multiple pfSense appliances in a high availability configuration (for upgrades, reboots etc), you can follow these steps:
+### `/etc/frr/frr.conf` — `ts-home1` (active)
 
-#### Tailscale HA Configuration
+```
+frr version 9.1
+frr defaults traditional
+hostname ts-home1
+service integrated-vtysh-config
+!
+ip route 100.64.0.0/10 Null0
+!
+router bgp 65001
+ bgp router-id 192.168.221.11
+ no bgp network import-check
+ neighbor 192.168.221.1 remote-as 65000
+ neighbor 192.168.221.1 update-source 192.168.221.11
+ neighbor 192.168.221.1 timers 3 9
+ !
+ address-family ipv4 unicast
+  redistribute static route-map tailscale
+  no neighbor 192.168.221.1 send-community
+  neighbor 192.168.221.1 soft-reconfiguration inbound
+  neighbor 192.168.221.1 prefix-list lan in
+  neighbor 192.168.221.1 prefix-list tailscale out
+ exit-address-family
+exit
+!
+ip prefix-list lan seq 10 permit 192.168.0.0/16 ge 16
+ip prefix-list tailscale seq 10 permit 100.64.0.0/10 ge 10
+!
+route-map tailscale permit 10
+ match ip address prefix-list tailscale
+exit
+!
+```
 
-* Ensure that both pfSense appliances are connected to Tailscale
-* Advertise the same routes to the Tailscale tailnet from both pfSense appliances
+### `/etc/frr/frr.conf` — `ts-home2` (standby)
 
-> **How HA failover works:** Both pfSense nodes advertise the same Tailscale routes and run OSPF with the Unifi Gateway. The primary node uses a lower OSPF metric (the default `10` from earlier), while the backup uses a higher metric (`100`). Under normal operation, the Unifi Gateway prefers the primary's lower-cost route. If the primary goes down, OSPF detects the neighbor loss and the Unifi Gateway automatically shifts traffic to the backup's higher-cost route. On the Tailscale side, both nodes advertise the same subnets — Tailscale will use the primary route advertiser and failover to the backup when the primary becomes unreachable.
+```
+frr version 9.1
+frr defaults traditional
+hostname ts-home2
+service integrated-vtysh-config
+!
+ip route 100.64.0.0/10 Null0
+!
+router bgp 65001
+ bgp router-id 192.168.221.12
+ bgp default local-preference 200
+ no bgp network import-check
+ neighbor 192.168.221.1 remote-as 65000
+ neighbor 192.168.221.1 update-source 192.168.221.12
+ neighbor 192.168.221.1 timers 3 9
+ !
+ address-family ipv4 unicast
+  redistribute static route-map tailscale
+  no neighbor 192.168.221.1 send-community
+  neighbor 192.168.221.1 soft-reconfiguration inbound
+  neighbor 192.168.221.1 prefix-list lan in
+  neighbor 192.168.221.1 prefix-list tailscale out
+  neighbor 192.168.221.1 route-map gateway-in in
+  neighbor 192.168.221.1 route-map gateway-out out
+ exit-address-family
+exit
+!
+ip prefix-list lan seq 10 permit 192.168.0.0/16 ge 16
+ip prefix-list tailscale seq 10 permit 100.64.0.0/10 ge 10
+!
+route-map gateway-in permit 10
+ set local-preference 50
+exit
+!
+route-map gateway-out permit 10
+ set metric 200
+exit
+!
+route-map tailscale permit 10
+ match ip address prefix-list tailscale
+exit
+!
+```
 
-#### CARP Configuration
+### Permissions and Start
 
-Configure CARP on the WAN or LAN interface on the first pfSense appliance with the following settings:
+FRR runs as the `frr` user and will silently load an empty config if it
+can't read `frr.conf`. Set ownership before starting:
 
-* Synchronize admin
-* User manager, users and groups
-* Authentication servers
-* Firewall rules
-* Firewall aliases
-* DNS Forwarder and Resolver configuration
+```bash
+chown frr:frr /etc/frr/frr.conf
+chmod 640 /etc/frr/frr.conf
+systemctl enable --now frr
+```
 
-#### FRR OSPF Configuration
+### Verify the FRR Version Match
 
-Configure FRR OSPF on both pfSense appliances with the same settings but modify the following on the **backup** node:
+The version on line 1 of `frr.conf` must match the installed version or FRR
+will refuse to load the config:
 
-* Under Services -> FRR OSPF -> Route Distribution
+```bash
+vtysh --version
+```
 
-  + FRR Static Routes
-    - Metric: `100`
-* Under Services -> FRR OSPF -> Interfaces -> LAN
+If it reports something like `9.1.2`, update line 1 to `frr version 9.1.2`
+and restart:
 
-  + OSPF Interface Handling
-  + Metric: `1000`
+```bash
+systemctl restart frr
+```
+
+## Tailscale Installation
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+```
+
+### UDP GRO Forwarding
+
+Tailscale will warn about suboptimal UDP GRO on `ens18` if this isn't set.
+Install `ethtool` and apply the tunable persistently:
+
+```bash
+apt install -y ethtool
+```
+
+```bash
+cat > /etc/systemd/system/tailscale-ethtool.service << 'EOF'
+[Unit]
+Description=Tailscale ethtool UDP GRO fix
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/ethtool -K ens18 rx-udp-gro-forwarding on rx-gro-list off
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now tailscale-ethtool
+```
+
+### Bring Up Tailscale
+
+Replace the `--advertise-routes` list with the LAN subnets you actually
+want reachable from the tailnet:
+
+```bash
+tailscale up \
+  --advertise-routes=192.168.0.0/24,192.168.10.0/24,192.168.20.0/24,192.168.221.0/24 \
+  --advertise-exit-node \
+  --ssh
+```
+
+The command prints an auth URL. Open it in a browser to authenticate the
+node. Repeat on the second VM — each node needs its own auth.
+
+### Approve Routes in the Tailscale Admin Console
+
+1. Go to <https://login.tailscale.com/admin/machines>.
+2. For each of `ts-home1` and `ts-home2`: three-dot menu → **Edit route
+   settings** → enable all advertised subnet routes and **Use as exit node**.
+
+![Tailscale route settings](images/tailscale-routes.png)
+
+### Disable Route Acceptance on the VMs
+
+These VMs advertise routes; they should not absorb routes from other
+Tailscale nodes into the kernel routing table.
+
+```bash
+tailscale set --accept-routes=false
+```
+
+## NAT Configuration
+
+LAN traffic heading into the tailnet is masqueraded as the VM's Tailscale
+IP so peers without your subnet routes accepted (phones, laptops, exit-node
+users) can route return traffic. Peers that explicitly accept your subnet
+routes will work without NAT, but masquerading is worth keeping for
+robustness.
+
+```bash
+apt install -y iptables-persistent
+
+iptables -t nat -A POSTROUTING -s 192.168.0.0/16 -o tailscale0 -j MASQUERADE
+
+netfilter-persistent save
+```
+
+`tailscale0` is the daemon's interface on Linux. The rule masquerades to
+the VM's current Tailscale IP automatically — no hardcoded `100.64.x.x`.
+
+Verify:
+
+```bash
+iptables -t nat -L POSTROUTING -v --line-numbers
+```
+
+You should see a `MASQUERADE` rule with `tailscale0` as the output
+interface and `192.168.0.0/16` as the source.
+
+## Verification
+
+### FRR Startup
+
+```bash
+journalctl -u frr --no-pager | tail -30
+```
+
+All four daemons should report `state -> up`:
+
+```
+watchfrr: zebra state -> up
+watchfrr: mgmtd state -> up
+watchfrr: bgpd state -> up
+watchfrr: staticd state -> up
+watchfrr: all daemons up, doing startup-complete notify
+```
+
+These `NB_OP_CHANGE` messages appear on every restart and are benign —
+they're a race between `zebra` and `mgmtd` during startup with no
+operational impact:
+
+```
+zebra: NB_OP_CHANGE: oper_walk_done: ERROR: Error sending notification message for path: /frr-interface:lib/interface[name="ens18"]/state
+```
+
+The line below confirms the UniFi Gateway pushed its full table and the session
+is up:
+
+```
+bgpd: rcvd End-of-RIB for IPv4 Unicast from 192.168.221.1 in vrf default
+```
+
+### BGP
+
+```bash
+# Session — 192.168.221.1 should be in Established
+vtysh -c "show bgp summary"
+
+# Full BGP table — 100.64.0.0/10 must be present once Tailscale is up
+vtysh -c "show ip bgp"
+
+# What UniFi Gateway is sending us (your LAN prefixes)
+vtysh -c "show ip bgp neighbors 192.168.221.1 received-routes"
+
+# What we're advertising back (should be 100.64.0.0/10)
+vtysh -c "show ip bgp neighbors 192.168.221.1 advertised-routes"
+```
+
+### Routing
+
+```bash
+# Blackhole route for the Tailscale aggregate — needed for redistribution
+ip route show 100.64.0.0/10
+
+# Full kernel routing table
+ip route show
+```
+
+### Tailscale
+
+```bash
+tailscale status
+tailscale status --peers=false
+```
+
+### From the UniFi Gateway
+
+SSH to the gateway and confirm both neighbors are up and `ts-home1` is
+preferred (lower MED received, higher local-preference):
+
+```bash
+vtysh -c "show bgp summary"
+vtysh -c "show ip bgp 100.64.0.0/10"
+```
+
+## Tailscale DNS (optional)
+
+To resolve tailnet hostnames from LAN clients, forward `*.ts.net` (or your
+tailnet's MagicDNS domain) to Quad100. On a UniFi-managed network, add a
+domain override to whatever resolver your LAN uses; if you happen to run
+Unbound somewhere, the entry looks like:
+
+- **Domain:** `ts.net` (or your tailnet's MagicDNS domain)
+- **Lookup Server IP:** `100.100.100.100`
+
+References:
+
+- <https://tailscale.com/kb/1081/magicdns>
+- <https://tailscale.com/kb/1381/what-is-quad100>
+
+## Watchdog Script
+
+The script below checks the four things most likely to silently break
+subnet routing — wedged Tailscale daemon, missing NAT rule, missing
+blackhole route, downed BGP session — and restarts the relevant service.
+Before relying on it, look at logs when things fail so you understand the
+actual root cause:
+
+```bash
+journalctl -u tailscale --no-pager | tail -30
+journalctl -u frr --no-pager | tail -30
+```
+
+### Install
+
+```bash
+cat > /usr/local/bin/tailscale-watchdog.sh << 'EOF'
+#!/bin/bash
+
+LOG="logger -t tailscale-watchdog"
+
+if ! tailscale status > /dev/null 2>&1; then
+    $LOG "Tailscale unresponsive, restarting"
+    systemctl restart tailscale
+    sleep 5
+fi
+
+if ! ip route show 100.64.0.0/10 | grep -q Null0; then
+    $LOG "Blackhole route missing, restarting FRR"
+    systemctl restart frr
+fi
+
+if ! iptables -t nat -L POSTROUTING | grep -q "tailscale0.*MASQUERADE\|MASQUERADE.*tailscale0"; then
+    $LOG "NAT rule missing, re-applying"
+    iptables -t nat -A POSTROUTING -s 192.168.0.0/16 -o tailscale0 -j MASQUERADE
+fi
+
+if ! vtysh -c "show bgp summary" | grep -q "192.168.221.1.*Established\|192.168.221.1.*[0-9]*:[0-9]*:[0-9]*"; then
+    $LOG "BGP session down, restarting FRR"
+    systemctl restart frr
+fi
+EOF
+
+chmod +x /usr/local/bin/tailscale-watchdog.sh
+```
+
+### Schedule
+
+```bash
+echo "*/5 * * * * root /usr/local/bin/tailscale-watchdog.sh" > /etc/cron.d/tailscale-watchdog
+```
+
+Runs every 5 minutes. Logs go to syslog under the `tailscale-watchdog` tag:
+
+```bash
+grep tailscale-watchdog /var/log/syslog
+```
 
 ## Troubleshooting
 
-### OSPF Adjacency Not Forming
+### BGP session won't establish
 
-* **MTU mismatch:** Ensure both sides of the OSPF link have the same MTU, or check `Ignore MTU` in the FRR OSPF interface settings on pfSense.
-* **Firewall blocking OSPF:** OSPF uses multicast (`224.0.0.5` and `224.0.0.6`) on protocol 89. Ensure no firewall rules are blocking this on the Inside network interface.
-* **Wrong area:** Both pfSense and the Unifi Gateway must be configured in the same OSPF area (`0.0.0.0`).
-* **Interface mismatch:** Verify that the correct interface is selected in FRR OSPF settings and that it corresponds to the Inside network VLAN.
+- **Wrong AS or peer IP:** confirm the UniFi Gateway config has the VM in AS 65001
+  and the right neighbor IP; confirm the VM config has the UniFi Gateway as AS
+  65000 at `192.168.221.1`.
+- **Firewall on the inside VLAN:** UniFi Gateway LAN-In may block TCP/179 between
+  `192.168.221.0/24` hosts. The default UniFi LAN policy allows intra-VLAN
+  traffic; an explicit deny will kill BGP.
+- **`update-source` mismatch:** the `neighbor … update-source` line on the
+  VM must match the IP that's actually on `ens19`. If you mis-typed it, the
+  session stays in `Active` and never moves to `Established`.
+- **Config not loaded:** `vtysh -c "show running-config"` — if it's nearly
+  empty, FRR couldn't read `frr.conf`. Re-check ownership and mode.
 
-### LAN Devices Can't Reach Tailscale Nodes
+### Session up, but no prefixes exchanged
 
-* **Check OSPF routes on Unifi:** SSH into the Unifi Gateway and run `vtysh -c 'show ip route ospf'` — you should see `100.64.0.0/10` pointing to pfSense.
-* **Check NAT rule order:** The outbound NAT rule must be at the **top** of the list. pfSense evaluates NAT rules top-down and uses the first match.
-* **Check Tailscale route approval:** In the Tailscale admin console, verify that the advertised routes from pfSense are approved.
-* **Check pfSense firewall rules:** Ensure the LAN rule allowing traffic to `100.64.0.0/10` exists and is above any block rules.
+- **Prefix-list typo:** `show ip prefix-list` should list both `lan` and
+  `tailscale` with their permit entries.
+- **`bgp network import-check`:** must be disabled (`no bgp network
+  import-check`) for the static `100.64.0.0/10` to be advertised before
+  Tailscale installs anything in the kernel table.
+- **`route-map tailscale` missing:** `redistribute static route-map tailscale`
+  silently advertises nothing if the named map doesn't exist.
 
-### Tailscale Nodes Can't Reach LAN Devices
+### LAN devices can't reach tailnet hosts
 
-* **NAT not working:** Verify the outbound NAT rule is translating source addresses correctly. You can check with packet captures on the Tailscale interface in pfSense (Diagnostics -> Packet Capture).
-* **Return routing:** Ensure pfSense has OSPF routes back to your Unifi subnets — run `vtysh -c 'show ip route ospf'` on pfSense to confirm.
+- **UniFi Gateway has the route?** `vtysh -c "show ip route bgp"` on the UniFi Gateway
+  should list `100.64.0.0/10` via `192.168.221.11`. If it's via `.12`,
+  your active VM is `ts-home2` — check why `ts-home1` lost the best-path
+  race.
+- **NAT rule missing on the active VM:** see [NAT Configuration](#nat-configuration).
+- **Routes not approved in Tailscale admin console.**
+- **Custom UniFi firewall policy blocking the traffic:** UniFi's default
+  LAN-In policy lets clients route to BGP-learned destinations without an
+  explicit rule. If you've added a restrictive policy (e.g. a default-deny
+  on LAN-In or a VLAN-isolation rule), add an allow rule for traffic to
+  `100.64.0.0/10`.
 
-## Conclusion
+### Tailnet hosts can't reach LAN devices
 
-You should now have a working OSPF configuration between your pfSense and Unifi Gateway. To test the configuration, try pinging devices on the other side of the network to verify that they can communicate with each other.
+- **NAT not translating:** packet-capture on `tailscale0` (with `tcpdump`)
+  and confirm outbound packets have a `100.x.x.x` source, not a
+  `192.168.x.x` one. If they don't, the masquerade rule isn't matching.
+- **Asymmetric routing:** if the active VM differs in each direction,
+  packets get dropped by stateful filters. Confirm both UniFi Gateway and tailnet
+  agree on which VM is active.
+
+### Failover slow or doesn't happen
+
+- **BGP timers:** confirm `timers 3 9` on every neighbor — defaults
+  (`60 180`) give you up to three minutes of black-holed traffic.
+- **Tailscale primary subnet router stuck:** when `ts-home1` is down
+  Tailscale should promote `ts-home2` as the primary route advertiser; if
+  it doesn't, the route advertisement on `ts-home1` may be cached. Check
+  the admin console.
+
+## Migration from the pfSense + OSPF Version
+
+Cutover is non-disruptive because the inside-VLAN IPs (`.11`, `.12`) are
+reused — the UniFi Gateway peers with the same IPs, only the protocol underneath
+changes from OSPF to BGP.
+
+1. Build `ts-home1`. Bring up FRR and Tailscale. Approve routes in the
+   admin console.
+2. Build `ts-home2`. Repeat.
+3. Confirm BGP is `Established` on both new VMs:
+   `vtysh -c "show bgp summary"`.
+4. Confirm Tailscale subnet routes are active in the admin console.
+5. Test: ping a LAN host from a tailnet peer and vice versa.
+6. Shut down the old pfSense VMs (`pf1`, `pf2`).
+7. Verify both BGP sessions stay up after pfSense is gone.
+8. Decommission the pfSense VMs.
+
+> Because the inside IPs are being reused, the pfSense VMs must be fully
+> powered off before the new VMs come up on the same IPs — otherwise you
+> get a VLAN 221 IP conflict.
+
+The UniFi Gateway BGP config replaces the OSPF config in
+`Settings → Routing`. Once the new VMs are up, remove the OSPF area from
+the UniFi controller; OSPF and BGP can coexist briefly during the cutover
+but the OSPF adjacency to pfSense will fail anyway once pfSense is off.
