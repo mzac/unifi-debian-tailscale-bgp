@@ -1,0 +1,7 @@
+# /etc/default/ts-maint (sourced by /usr/local/sbin/ts-maint)
+GW=10.99.0.1            # UniFi Gateway on the BGP transit VLAN
+AS=65001
+VIP=10.99.0.10
+VIP_DEV=ens19
+NAME_PREFIX=ts-router   # both routers' Tailscale hostnames start with this
+PEER_IP=10.99.0.12      # the OTHER router (10.99.0.11 on ts-router2)

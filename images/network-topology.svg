@@ -1,175 +1,62 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 820" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 640" width="900" height="640" font-family="'DejaVu Sans', -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
   <defs>
-    <marker id="arrowSlate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="4.5" markerHeight="4.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
     </marker>
-    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#059669"/>
-    </marker>
-    <marker id="arrowAmber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#D97706"/>
-    </marker>
-    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0D9488"/>
-    </marker>
-    <filter id="boxShadow" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur in="SourceAlpha" stdDeviation="2.5"/>
-      <feOffset dx="0" dy="2" result="o"/>
-      <feComponentTransfer><feFuncA type="linear" slope="0.12"/></feComponentTransfer>
-      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
   </defs>
+  <rect width="900" height="640" fill="#ffffff"/>
+  <text x="450" y="40" text-anchor="middle" font-size="24" font-weight="700" fill="#0f172a">Overview</text>
+  <text x="450" y="66" text-anchor="middle" font-size="15" fill="#475569">Two identical routers. Whichever one Tailscale makes primary does all the work.</text>
 
-  <rect width="1160" height="820" fill="#F8FAFC"/>
+  <!-- Tailnet -->
+  <rect x="300" y="92" width="300" height="70" rx="12" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="450" y="122" text-anchor="middle" font-size="19" font-weight="700" fill="#4c1d95">Tailnet</text>
+  <text x="450" y="146" text-anchor="middle" font-size="14" fill="#5b21b6">your devices, anywhere</text>
 
-  <text x="580" y="42" text-anchor="middle" font-size="22" font-weight="700" fill="#0F172A">Network Topology</text>
-  <text x="580" y="64" text-anchor="middle" font-size="13" fill="#64748B">UniFi Gateway eBGP peering with two Debian + FRR Tailscale subnet routers (active / standby)</text>
+  <!-- Router 1 (primary) -->
+  <rect x="60" y="232" width="320" height="150" rx="12" fill="#dcfce7" stroke="#16a34a" stroke-width="3"/>
+  <text x="220" y="266" text-anchor="middle" font-size="20" font-weight="700" fill="#14532d">ts-router1</text>
+  <rect x="155" y="280" width="130" height="28" rx="14" fill="#16a34a"/>
+  <text x="220" y="300" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">PRIMARY</text>
+  <text x="220" y="334" text-anchor="middle" font-size="15" fill="#14532d">BGP MED 0 · owns the VIP</text>
+  <text x="220" y="358" text-anchor="middle" font-size="14" fill="#166534">10.99.0.11 + VIP 10.99.0.10</text>
 
-  <!-- Internet cloud -->
-  <g>
-    <ellipse cx="150" cy="140" rx="92" ry="42" fill="#EFF6FF" stroke="#3B82F6" stroke-width="1.5"/>
-    <text x="150" y="137" text-anchor="middle" font-size="14" font-weight="700" fill="#1E40AF">Internet</text>
-    <text x="150" y="155" text-anchor="middle" font-size="10" fill="#3B82F6">(WAN egress)</text>
-  </g>
+  <!-- Router 2 (standby) -->
+  <rect x="520" y="232" width="320" height="150" rx="12" fill="#f1f5f9" stroke="#94a3b8" stroke-width="3" stroke-dasharray="8 6"/>
+  <text x="680" y="266" text-anchor="middle" font-size="20" font-weight="700" fill="#334155">ts-router2</text>
+  <rect x="615" y="280" width="130" height="28" rx="14" fill="#94a3b8"/>
+  <text x="680" y="300" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">STANDBY</text>
+  <text x="680" y="334" text-anchor="middle" font-size="15" fill="#334155">BGP MED 200 · NAT copy</text>
+  <text x="680" y="358" text-anchor="middle" font-size="14" fill="#475569">10.99.0.12</text>
 
-  <!-- Tailscale cloud -->
-  <g>
-    <ellipse cx="990" cy="140" rx="120" ry="52" fill="#CCFBF1" stroke="#0D9488" stroke-width="1.5"/>
-    <text x="990" y="122" text-anchor="middle" font-size="14" font-weight="700" fill="#0F766E">Tailscale Tailnet</text>
-    <text x="990" y="140" text-anchor="middle" font-size="11" fill="#0F766E">100.64.0.0/10</text>
-    <g fill="#14B8A6">
-      <circle cx="940" cy="162" r="4"/>
-      <circle cx="965" cy="166" r="4"/>
-      <circle cx="990" cy="162" r="4"/>
-      <circle cx="1015" cy="166" r="4"/>
-      <circle cx="1040" cy="162" r="4"/>
-    </g>
-    <text x="990" y="183" text-anchor="middle" font-size="9" fill="#0F766E">remote peers · exit-node clients</text>
-  </g>
+  <!-- tailnet <-> routers -->
+  <line x1="370" y1="164" x2="270" y2="228" stroke="#7c3aed" stroke-width="4" marker-end="url(#a)" marker-start="url(#a)"/>
+  <line x1="530" y1="164" x2="630" y2="228" stroke="#a78bfa" stroke-width="2" stroke-dasharray="7 6"/>
 
-  <!-- UniFi Gateway box -->
-  <g filter="url(#boxShadow)">
-    <rect x="440" y="220" width="280" height="130" rx="10" fill="#FFFFFF" stroke="#0058D4" stroke-width="2"/>
-    <path d="M 440 230 A 10 10 0 0 1 450 220 L 710 220 A 10 10 0 0 1 720 230 L 720 254 L 440 254 Z" fill="#0058D4"/>
-    <text x="580" y="244" text-anchor="middle" font-size="14" font-weight="700" fill="#FFFFFF">UniFi Gateway</text>
+  <!-- sync -->
+  <line x1="384" y1="306" x2="516" y2="306" stroke="#d97706" stroke-width="3" marker-end="url(#a)"/>
+  <text x="450" y="296" text-anchor="middle" font-size="13" fill="#92400e">NAT sync</text>
+  <text x="450" y="326" text-anchor="middle" font-size="13" fill="#92400e">+ VRRP</text>
 
-    <text x="460" y="278" font-size="11" font-weight="700" fill="#0F172A">AS 65000</text>
-    <text x="460" y="296" font-size="11" fill="#475569">router-id 192.168.0.1</text>
-    <text x="460" y="314" font-size="11" fill="#475569">inside peer: 192.168.221.1</text>
-    <text x="460" y="332" font-size="11" fill="#475569">VLAN 221 — BGP transit subnet</text>
-  </g>
+  <!-- Gateway -->
+  <rect x="290" y="440" width="320" height="76" rx="12" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+  <text x="450" y="472" text-anchor="middle" font-size="19" font-weight="700" fill="#1e3a8a">UniFi Gateway</text>
+  <text x="450" y="498" text-anchor="middle" font-size="14" fill="#1d4ed8">picks the router with the lowest MED</text>
 
-  <!-- ts-home1 (Proxmox A) -->
-  <g filter="url(#boxShadow)">
-    <rect x="110" y="425" width="290" height="205" rx="10" fill="#FFF7ED" stroke="#FB923C" stroke-width="1.5" stroke-dasharray="4 3"/>
-    <text x="125" y="448" font-size="10" font-weight="600" fill="#9A3412">Proxmox Host A</text>
+  <!-- BGP -->
+  <line x1="230" y1="386" x2="360" y2="436" stroke="#2563eb" stroke-width="4" marker-end="url(#a)" marker-start="url(#a)"/>
+  <text x="196" y="420" text-anchor="middle" font-size="14" fill="#1d4ed8">BGP (in use)</text>
+  <line x1="670" y1="386" x2="540" y2="436" stroke="#93c5fd" stroke-width="2" stroke-dasharray="7 6"/>
+  <text x="712" y="420" text-anchor="middle" font-size="14" fill="#1d4ed8">BGP (backup)</text>
 
-    <rect x="130" y="462" width="250" height="155" rx="8" fill="#FFFFFF" stroke="#A81D33" stroke-width="2"/>
-    <path d="M 130 472 A 8 8 0 0 1 138 462 L 372 462 A 8 8 0 0 1 380 472 L 380 494 L 130 494 Z" fill="#A81D33"/>
-    <text x="145" y="484" font-size="13" font-weight="700" fill="#FFFFFF">ts-home1</text>
+  <!-- LAN -->
+  <rect x="300" y="562" width="300" height="56" rx="12" fill="#f8fafc" stroke="#475569" stroke-width="2"/>
+  <text x="450" y="597" text-anchor="middle" font-size="18" font-weight="700" fill="#0f172a">LAN · 10.0.0.0/8</text>
+  <line x1="450" y1="518" x2="450" y2="558" stroke="#334155" stroke-width="3" marker-end="url(#a)" marker-start="url(#a)"/>
 
-    <rect x="305" y="468" width="70" height="20" rx="10" fill="#10B981"/>
-    <text x="340" y="481" text-anchor="middle" font-size="10" font-weight="700" fill="#FFFFFF">ACTIVE</text>
-
-    <text x="145" y="517" font-size="11" font-weight="700" fill="#0F172A">AS 65001</text>
-    <text x="145" y="535" font-size="11" fill="#475569">Debian 13 + FRR (bgpd)</text>
-    <text x="145" y="553" font-size="11" fill="#475569">ens18: WAN VLAN 220 (DHCP)</text>
-    <text x="145" y="571" font-size="11" fill="#475569">ens19: 192.168.221.11/24</text>
-    <text x="145" y="589" font-size="11" fill="#475569">tailscale0: 100.x.x.x</text>
-    <text x="145" y="607" font-size="10" fill="#94A3B8">advertises 100.64.0.0/10 → UniFi Gateway</text>
-  </g>
-
-  <!-- ts-home2 (Proxmox B) -->
-  <g filter="url(#boxShadow)">
-    <rect x="760" y="425" width="290" height="205" rx="10" fill="#FFF7ED" stroke="#FB923C" stroke-width="1.5" stroke-dasharray="4 3"/>
-    <text x="775" y="448" font-size="10" font-weight="600" fill="#9A3412">Proxmox Host B</text>
-
-    <rect x="780" y="462" width="250" height="155" rx="8" fill="#FFFFFF" stroke="#A81D33" stroke-width="2"/>
-    <path d="M 780 472 A 8 8 0 0 1 788 462 L 1022 462 A 8 8 0 0 1 1030 472 L 1030 494 L 780 494 Z" fill="#A81D33"/>
-    <text x="795" y="484" font-size="13" font-weight="700" fill="#FFFFFF">ts-home2</text>
-
-    <rect x="948" y="468" width="78" height="20" rx="10" fill="#D97706"/>
-    <text x="987" y="481" text-anchor="middle" font-size="10" font-weight="700" fill="#FFFFFF">STANDBY</text>
-
-    <text x="795" y="517" font-size="11" font-weight="700" fill="#0F172A">AS 65001</text>
-    <text x="795" y="535" font-size="11" fill="#475569">Debian 13 + FRR (bgpd)</text>
-    <text x="795" y="553" font-size="11" fill="#475569">ens18: WAN VLAN 220 (DHCP)</text>
-    <text x="795" y="571" font-size="11" fill="#475569">ens19: 192.168.221.12/24</text>
-    <text x="795" y="589" font-size="11" fill="#475569">tailscale0: 100.x.x.x</text>
-    <text x="795" y="607" font-size="10" fill="#94A3B8">advertises 100.64.0.0/10 → UniFi Gateway</text>
-  </g>
-
-  <!-- LAN clients box -->
-  <g filter="url(#boxShadow)">
-    <rect x="400" y="685" width="360" height="105" rx="10" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.5"/>
-    <text x="580" y="713" text-anchor="middle" font-size="14" font-weight="700" fill="#0F172A">LAN clients</text>
-    <text x="580" y="731" text-anchor="middle" font-size="11" fill="#475569">192.168.0.0/16 — multiple VLANs</text>
-    <g transform="translate(437, 748)" fill="#CBD5E1" stroke="#64748B" stroke-width="0.75">
-      <rect x="0" y="0" width="20" height="14" rx="2"/>
-      <rect x="40" y="0" width="20" height="14" rx="2"/>
-      <rect x="80" y="0" width="20" height="14" rx="2"/>
-      <rect x="120" y="0" width="20" height="14" rx="2"/>
-      <rect x="160" y="0" width="20" height="14" rx="2"/>
-      <rect x="200" y="0" width="20" height="14" rx="2"/>
-      <rect x="240" y="0" width="20" height="14" rx="2"/>
-      <rect x="280" y="0" width="20" height="14" rx="2"/>
-    </g>
-  </g>
-
-  <!-- Internet -> UniFi Gateway WAN -->
-  <g>
-    <path d="M 230 152 Q 320 175 445 230" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrowSlate)"/>
-    <text x="305" y="178" text-anchor="middle" font-size="10" font-weight="600" fill="#475569">WAN</text>
-  </g>
-
-  <!-- UniFi Gateway -> ts-home1 (preferred eBGP) -->
-  <g>
-    <line x1="490" y1="350" x2="285" y2="462" stroke="#059669" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
-    <line x1="285" y1="462" x2="490" y2="350" stroke="#059669" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
-    <rect x="312" y="388" width="88" height="32" rx="4" fill="#FFFFFF" stroke="#059669" stroke-width="1.2"/>
-    <text x="356" y="401" text-anchor="middle" font-size="10" font-weight="700" fill="#059669">eBGP</text>
-    <text x="356" y="414" text-anchor="middle" font-size="9" fill="#065F46">preferred path</text>
-  </g>
-
-  <!-- UniFi Gateway -> ts-home2 (standby eBGP) -->
-  <g>
-    <line x1="670" y1="350" x2="875" y2="462" stroke="#D97706" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrowAmber)"/>
-    <line x1="875" y1="462" x2="670" y2="350" stroke="#D97706" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrowAmber)"/>
-    <rect x="758" y="388" width="88" height="32" rx="4" fill="#FFFFFF" stroke="#D97706" stroke-width="1.2"/>
-    <text x="802" y="401" text-anchor="middle" font-size="10" font-weight="700" fill="#D97706">eBGP</text>
-    <text x="802" y="414" text-anchor="middle" font-size="9" fill="#9A3412">standby (MED 200)</text>
-  </g>
-
-  <!-- ts-home1 -> Tailscale tunnel -->
-  <g>
-    <path d="M 380 470 C 600 380, 800 220, 905 180" fill="none" stroke="#0D9488" stroke-width="2" stroke-dasharray="6 3" marker-end="url(#arrowTeal)"/>
-    <text x="640" y="270" font-size="10" font-weight="600" fill="#0D9488">Tailscale tunnel</text>
-  </g>
-
-  <!-- ts-home2 -> Tailscale tunnel -->
-  <g>
-    <path d="M 905 462 C 940 370, 980 230, 998 195" fill="none" stroke="#0D9488" stroke-width="2" stroke-dasharray="6 3" marker-end="url(#arrowTeal)"/>
-    <text x="920" y="345" font-size="10" font-weight="600" fill="#0D9488">Tailscale</text>
-    <text x="928" y="358" font-size="10" font-weight="600" fill="#0D9488">tunnel</text>
-  </g>
-
-  <!-- LAN -> UniFi Gateway -->
-  <g>
-    <line x1="580" y1="685" x2="580" y2="350" stroke="#475569" stroke-width="2" marker-end="url(#arrowSlate)"/>
-    <rect x="595" y="500" width="86" height="20" rx="4" fill="#F8FAFC"/>
-    <text x="638" y="514" text-anchor="middle" font-size="10" fill="#475569">LAN traffic</text>
-  </g>
-
-  <!-- Legend -->
-  <g transform="translate(40, 790)">
-    <text x="0" y="0" font-size="10" font-weight="700" fill="#475569">Legend</text>
-    <line x1="55" y1="-3" x2="85" y2="-3" stroke="#059669" stroke-width="2.5"/>
-    <text x="90" y="0" font-size="10" fill="#475569">preferred BGP path</text>
-    <line x1="220" y1="-3" x2="250" y2="-3" stroke="#D97706" stroke-width="2" stroke-dasharray="6 4"/>
-    <text x="255" y="0" font-size="10" fill="#475569">standby BGP path</text>
-    <line x1="370" y1="-3" x2="400" y2="-3" stroke="#0D9488" stroke-width="2" stroke-dasharray="6 3"/>
-    <text x="405" y="0" font-size="10" fill="#475569">Tailscale overlay tunnel</text>
-    <line x1="555" y1="-3" x2="585" y2="-3" stroke="#475569" stroke-width="2"/>
-    <text x="590" y="0" font-size="10" fill="#475569">routed IP traffic</text>
+  <!-- legend -->
+  <g font-size="13" fill="#334155">
+    <line x1="40" y1="580" x2="80" y2="580" stroke="#334155" stroke-width="4"/><text x="90" y="585">in use</text>
+    <line x1="40" y1="606" x2="80" y2="606" stroke="#94a3b8" stroke-width="2" stroke-dasharray="7 6"/><text x="90" y="611">ready for failover</text>
   </g>
 </svg>
