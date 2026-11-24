@@ -17,6 +17,22 @@ Run Tailscale as a highly available subnet router (and exit node) behind a UniFi
 
 All addresses below are **examples**: substitute your own.
 
+### Config generator
+
+Rather fill in a form? **[Open the config generator](https://mzac.github.io/unifi-debian-tailscale-bgp/generator/)**
+(source: [`generator/`](generator/)). Enter your addresses and it produces:
+- the UniFi BGP config;
+- every file for both routers;
+- the `tailscale up` command and a policy snippet;
+- a zip per router with an `install.sh`.
+
+It runs entirely in your browser: nothing you type is sent anywhere.
+
+`install.sh` installs the packages and copies the files into place. It backs up anything it replaces, adds the NAT
+rules only if they're missing, and enables the services; `--dry-run` shows the steps first. It does **not** change
+your network interfaces, log in to Tailscale or touch the UniFi Gateway: those stay manual. Its output matches the
+files in [`files/`](files/): `node generator/test.js` checks that.
+
 ## Architecture
 
 ![Network topology](images/network-topology.svg)
