@@ -10,6 +10,27 @@ Run Tailscale as a highly available subnet router (and exit node) behind a UniFi
 - **conntrackd** copies the NAT table to the standby, so open connections survive a failover.
 - `ts-maint` drains a VM before maintenance (`ts-maint reboot`), so planned reboots are seamless.
 
+## ⚡ Quick start: the config generator
+
+**[→ Open the config generator](https://mzac.github.io/unifi-debian-tailscale-bgp/generator/)**
+
+Setting this up by hand is fiddly. Every address, AS number, interface name and VRRP setting has to match across
+**about a dozen files on two routers plus the UniFi Gateway**, and a single typo leaves BGP down, the VIP on the wrong
+router or NAT not working. The generator does that bookkeeping for you:
+
+- Fill in your hostnames, LAN range, transit VLAN, router IPs, VIP and AS numbers. Mistakes are flagged as you
+  type (a VIP outside the transit subnet, duplicate addresses, subnets outside your LAN range, …).
+- You get the UniFi BGP config to paste, every file for both routers, the `tailscale up` command and a policy
+  snippet.
+- **Download a zip per router** with an `install.sh` that installs the packages, puts the files in place (backing up
+  anything it replaces), adds the NAT rules and enables the services. Try it first with `--dry-run`.
+- It runs entirely in your browser: nothing you type is sent anywhere.
+
+`install.sh` deliberately doesn't change your network interfaces, log in to Tailscale or touch the UniFi Gateway: it
+prints those steps for you. The rest of this README explains what each piece does, so you can follow, review or
+troubleshoot what the generator produced. (Source: [`generator/`](generator/); `node generator/test.js` checks its
+output matches the files in [`files/`](files/).)
+
 > **History.** This repo first documented a pfSense + OSPF design, then a Debian + FRR design where the UniFi
 > Gateway preferred one VM with a fixed local-preference. This version replaces the fixed preference with
 > "follow the Tailscale primary" and adds the shared SNAT VIP and connection sync. See
