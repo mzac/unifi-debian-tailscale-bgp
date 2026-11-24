@@ -94,7 +94,7 @@ status() {
 }
 
 drain() {
-    local me peer pon pp sp i
+    local me peer pon pp sp
     me=$(self); read -r sp peer pon pp < <(ts_roles)
     if [ "$pon" != yes ]; then echo "REFUSING: peer $peer is not online in Tailscale; draining would cut the tailnet off" >&2; return 1; fi
     if [ ! -e "$STATE/drained" ]; then
@@ -106,7 +106,7 @@ drain() {
     # Wait until Tailscale has moved the primary (~1 s), THEN release the VIP at once: stopping keepalived sends a
     # priority-0 advert, so the peer takes over immediately and commits the synced NAT table. Waiting for the track
     # script instead made the VIP lag the Tailscale switch by ~6 s.
-    for i in $(seq 1 20); do
+    for _ in $(seq 1 20); do
         read -r sp peer pon pp < <(ts_roles)
         [ "$sp" = no ] && break
         sleep 0.5
@@ -168,7 +168,7 @@ case "${1:-status}" in
     boot-restore)   # ts-maint-restore.service: undrain if the last shutdown was a drain, and never boot with a saved
                     # 'neighbor ... shutdown' (a 'write memory' while drained persists one)
         if [ -e "$STATE/drained" ]; then
-            for i in $(seq 1 30); do tailscale status >/dev/null 2>&1 && break; sleep 2; done
+            for _ in $(seq 1 30); do tailscale status >/dev/null 2>&1 && break; sleep 2; done
             undrain
         fi
         if grep -q "neighbor $GW shutdown" /etc/frr/frr.conf 2>/dev/null; then

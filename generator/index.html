@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Config Generator</title>
+<meta name="description" content="Fill in your addresses; get the UniFi BGP config, both routers' files and an install script. Runs only in your browser.">
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1b1f24;--mut:#5b6470;--bd:#d7dce2;--acc:#2563eb;--acc-fg:#fff;--ok:#16794a;--err:#b42318;--err-bg:#fef3f2;--code:#0f172a;--code-fg:#e2e8f0}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e1116;--card:#161b22;--fg:#e6edf3;--mut:#9aa4b0;--bd:#30363d;--acc:#4c8dff;--acc-fg:#fff;--ok:#3fb27f;--err:#ff7b72;--err-bg:#2a1414;--code:#0b0f14;--code-fg:#d6deeb}}
+:root[data-theme="dark"]{--bg:#0e1116;--card:#161b22;--fg:#e6edf3;--mut:#9aa4b0;--bd:#30363d;--acc:#4c8dff;--acc-fg:#fff;--ok:#3fb27f;--err:#ff7b72;--err-bg:#2a1414;--code:#0b0f14;--code-fg:#d6deeb}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{padding:28px 16px 8px;max-width:1100px;margin:0 auto}
+h1{margin:0 0 6px;font-size:26px}
+header p{margin:0;color:var(--mut)}
+main{max-width:1100px;margin:0 auto;padding:8px 16px 60px;display:grid;grid-template-columns:minmax(0,420px) minmax(0,1fr);gap:20px;align-items:start}
+@media (max-width:900px){main{grid-template-columns:1fr}}
+main>*{min-width:0}
+.jump{display:none;margin:10px 0 0;text-decoration:none}
+@media (max-width:900px){.jump{display:inline-block}}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px 18px;margin-bottom:16px}
+.card h2{font-size:16px;margin:0 0 10px}
+.card h2 small{font-weight:400;color:var(--mut)}
+label{display:block;font-size:13px;font-weight:600;margin:10px 0 3px}
+label .hint{font-weight:400;color:var(--mut)}
+input[type=text]{width:100%;padding:7px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--fg);font:14px ui-monospace,SFMono-Regular,Menlo,monospace}
+input[type=text][aria-invalid=true]{border-color:var(--err);background:var(--err-bg)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.check{display:flex;gap:8px;align-items:center;font-weight:400;margin-top:10px}
+.err{color:var(--err);font-size:12.5px;margin-top:3px}
+.status{padding:10px 14px;border-radius:10px;font-weight:600;margin-bottom:12px}
+.status.ok{background:color-mix(in srgb,var(--ok) 14%,transparent);color:var(--ok)}
+.status.bad{background:var(--err-bg);color:var(--err)}
+.tabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.tabs button{border:1px solid var(--bd);background:var(--card);color:var(--fg);padding:7px 14px;border-radius:99px;cursor:pointer;font:inherit;font-size:14px}
+.tabs button[aria-selected=true]{background:var(--acc);border-color:var(--acc);color:var(--acc-fg)}
+.block{margin-bottom:16px}
+.bh{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:5px}
+.bh b{font-size:14px}
+.bh span{color:var(--mut);font-size:12.5px}
+.btn{border:1px solid var(--bd);background:var(--card);color:var(--fg);border-radius:7px;padding:4px 10px;cursor:pointer;font:inherit;font-size:13px;white-space:nowrap}
+.btn.primary{background:var(--acc);border-color:var(--acc);color:var(--acc-fg);padding:8px 16px;font-size:14px;font-weight:600}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+pre{margin:0;background:var(--code);color:var(--code-fg);padding:12px 14px;border-radius:9px;overflow-x:auto;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;max-height:420px}
+ol.steps{padding-left:20px;margin:0}ol.steps li{margin:8px 0}
+code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:color-mix(in srgb,var(--mut) 15%,transparent);padding:1px 5px;border-radius:5px}
+.note{color:var(--mut);font-size:13px}
+.dl{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 14px}
+details summary{cursor:pointer;color:var(--acc);font-size:14px;margin:6px 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>Config generator</h1>
+  <p>Fill in your addresses. You get the UniFi BGP config, every file for both routers and an install script.
+     Everything runs in your browser: nothing you type is sent anywhere.</p>
+  <a class="btn jump" href="#result">Jump to your config ↓</a>
+</header>
+<main>
+  <form id="f" autocomplete="off" onsubmit="return false">
+    <div class="card"><h2>Routers</h2>
+      <div class="row">
+        <div><label for="r1">Router 1 hostname</label><input type="text" id="r1"></div>
+        <div><label for="r2">Router 2 hostname</label><input type="text" id="r2"></div>
+      </div>
+      <div class="row">
+        <div><label for="wanIf">WAN interface <span class="hint">(DHCP)</span></label><input type="text" id="wanIf"></div>
+        <div><label for="inIf">Inside interface</label><input type="text" id="inIf"></div>
+      </div>
+    </div>
+
+    <div class="card"><h2>Your LAN</h2>
+      <label for="lan">LAN range <span class="hint">(covers all your VLANs)</span></label><input type="text" id="lan">
+      <label for="routes">Subnets to reach from the tailnet <span class="hint">(comma-separated)</span></label><input type="text" id="routes">
+      <label class="check"><input type="checkbox" id="exitNode"> Also act as an exit node</label>
+      <label class="check"><input type="checkbox" id="tsSsh"> Enable Tailscale SSH on the routers</label>
+    </div>
+
+    <div class="card"><h2>BGP transit VLAN</h2>
+      <label for="transit">Transit subnet</label><input type="text" id="transit">
+      <div class="row">
+        <div><label for="gw">UniFi Gateway IP</label><input type="text" id="gw"></div>
+        <div><label for="vip">Shared VIP <span class="hint">(SNAT)</span></label><input type="text" id="vip"></div>
+      </div>
+      <div class="row">
+        <div><label for="ip1">Router 1 IP</label><input type="text" id="ip1"></div>
+        <div><label for="ip2">Router 2 IP</label><input type="text" id="ip2"></div>
+      </div>
+    </div>
+
+    <div class="card"><h2>BGP</h2>
+      <div class="row">
+        <div><label for="asGw">UniFi AS</label><input type="text" id="asGw"></div>
+        <div><label for="asTs">Routers' AS</label><input type="text" id="asTs"></div>
+      </div>
+      <label for="gwId">UniFi router-id <span class="hint">(usually its main LAN IP)</span></label><input type="text" id="gwId">
+    </div>
+
+    <details class="card"><summary>Advanced (optional)</summary>
+      <div class="row">
+        <div><label for="wan1">Router 1 WAN IP</label><input type="text" id="wan1"></div>
+        <div><label for="wan2">Router 2 WAN IP</label><input type="text" id="wan2"></div>
+      </div>
+      <div class="row">
+        <div><label for="ts1">Router 1 Tailscale IP</label><input type="text" id="ts1"></div>
+        <div><label for="ts2">Router 2 Tailscale IP</label><input type="text" id="ts2"></div>
+      </div>
+      <p class="note">Only used so conntrackd skips the routers' own traffic. Unknown before setup? Leave them empty and fill
+        them into <code>/etc/conntrackd/conntrackd.conf</code> later.</p>
+      <div class="row">
+        <div><label for="vrid">VRRP router ID</label><input type="text" id="vrid"></div>
+        <div><label for="frrVersion">FRR version</label><input type="text" id="frrVersion"></div>
+      </div>
+      <label for="tag">Tailscale tag for the routers</label><input type="text" id="tag">
+      <p><button type="button" class="btn" id="reset">Reset to the example values</button></p>
+    </details>
+  </form>
+
+  <section id="result" aria-live="polite">
+    <div id="status" class="status"></div>
+    <div class="tabs" role="tablist" id="tabs"></div>
+    <div id="out"></div>
+  </section>
+</main>
+
+<script src="gen.js"></script>
+<script>
+(function () {
+  const G = window.TSGen;
+  const F = Object.keys(G.DEFAULTS);
+  const $ = (id) => document.getElementById(id);
+  const KEY = "tsgen-answers-v1";
+  // URL hash -> tab (hash names differ from the input ids, so the browser does not scroll to an input)
+  const HASH = { steps: "steps", unifi: "unifi", router1: "r1", router2: "r2", tailscale: "ts" };
+  const HASH_OF = Object.fromEntries(Object.entries(HASH).map(([h, t]) => [t, h]));
+  let tab = HASH[location.hash.slice(1)] || "steps", repo = {}, repoMissing = [];
+
+  function load() {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch (e) { saved = {}; }
+    F.forEach((k) => {
+      const el = $(k), v = k in saved ? saved[k] : G.DEFAULTS[k];
+      if (el.type === "checkbox") el.checked = !!v; else el.value = v;
+    });
+  }
+  function values() {
+    const v = {};
+    F.forEach((k) => { const el = $(k); v[k] = el.type === "checkbox" ? el.checked : el.value.trim(); });
+    return v;
+  }
+  function save(v) { try { localStorage.setItem(KEY, JSON.stringify(v)); } catch (e) { /* private mode */ } }
+
+  function el(tag, attrs, ...kids) {
+    const e = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, val]) => { if (k === "class") e.className = val; else if (k.startsWith("on")) e[k] = val; else e.setAttribute(k, val); });
+    kids.flat().forEach((c) => e.append(c instanceof Node ? c : document.createTextNode(c)));
+    return e;
+  }
+  function copyBtn(text) {
+    const b = el("button", { class: "btn", type: "button" }, "Copy");
+    b.onclick = async () => {
+      try { await navigator.clipboard.writeText(text); b.textContent = "Copied"; }
+      catch (e) { b.textContent = "Select and copy"; }
+      setTimeout(() => (b.textContent = "Copy"), 1500);
+    };
+    return b;
+  }
+  function block(title, sub, text) {
+    return el("div", { class: "block" },
+      el("div", { class: "bh" }, el("div", {}, el("b", {}, title), sub ? el("span", {}, " · " + sub) : ""), copyBtn(text)),
+      el("pre", {}, text));
+  }
+  function download(name, bytes, type) {
+    const url = URL.createObjectURL(new Blob([bytes], { type }));
+    const a = el("a", { href: url, download: name }); document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+  function routerZip(r) {
+    return G.zip(Object.keys(r.files).sort().map((f) => ({ name: r.name + "/" + f, text: r.files[f], exec: f === "install.sh" || f === "ts-maint" || f === "primary-backup.sh" })));
+  }
+
+  const DEST = {
+    "frr.conf": "/etc/frr/frr.conf", "keepalived.conf": "/etc/keepalived/keepalived.conf",
+    "conntrackd.conf": "/etc/conntrackd/conntrackd.conf", "ts-maint.default": "/etc/default/ts-maint",
+    "interfaces.example": "/etc/network/interfaces (set by hand)", "install.sh": "run as root on the router",
+  };
+
+  function render() {
+    const v = values(); save(v);
+    const errs = G.validate(v);
+    F.forEach((k) => { const e = $(k); if (e.type !== "checkbox") e.removeAttribute("aria-invalid"); });
+    document.querySelectorAll(".err").forEach((x) => x.remove());
+    errs.forEach(([k, msg]) => { const e = $(k); e.setAttribute("aria-invalid", "true"); e.insertAdjacentElement("afterend", el("div", { class: "err" }, msg)); });
+    const st = $("status");
+    if (errs.length) {
+      st.className = "status bad"; st.textContent = `Fix ${errs.length} thing${errs.length > 1 ? "s" : ""} on the left to see your config.`;
+      $("tabs").replaceChildren(); $("out").replaceChildren(); return;
+    }
+    st.className = "status ok"; st.textContent = "Looks good. Your config is below.";
+    const g = G.generate(v, repo);
+    const tabs = [["steps", "Steps"], ["unifi", "UniFi Gateway"], ["r1", v.r1], ["r2", v.r2], ["ts", "Tailscale"]];
+    $("tabs").replaceChildren(...tabs.map(([id, label]) => {
+      const b = el("button", { type: "button", role: "tab", "aria-selected": String(tab === id) }, label);
+      b.onclick = () => { tab = id; history.replaceState(null, "", "#" + HASH_OF[id]); render(); };
+      return b;
+    }));
+    const out = [];
+    if (tab === "steps") {
+      out.push(el("div", { class: "card" }, el("h2", {}, "Steps"),
+        el("ol", { class: "steps" },
+          el("li", {}, "Build two Debian 13 VMs, each with a WAN interface (", el("code", {}, v.wanIf), ", DHCP) and an inside interface (", el("code", {}, v.inIf), ") on the transit VLAN ", el("code", {}, G.cidr(v.transit).text), "."),
+          el("li", {}, "On each, set the hostname and the inside address (", el("code", {}, "interfaces.example"), " in its zip): ", el("code", {}, v.r1 + " = " + v.ip1), ", ", el("code", {}, v.r2 + " = " + v.ip2), "."),
+          el("li", {}, "Download each router's zip below, copy it over, unzip, and run ", el("code", {}, "sudo ./install.sh --dry-run"), " to see what it will do, then ", el("code", {}, "sudo ./install.sh"), "."),
+          el("li", {}, "On each router, log in to Tailscale with the command the script prints (also on the Tailscale tab), then approve the routes", v.exitNode ? " and exit node" : "", "."),
+          el("li", {}, "Paste the UniFi Gateway config into ", el("code", {}, "Settings → Routing → BGP"), "."),
+          el("li", {}, "Check on each router: ", el("code", {}, "ts-maint status"), ", ", el("code", {}, "vtysh -c \"show bgp summary\""), ", ", el("code", {}, "systemctl --failed"), "."))));
+      out.push(el("div", { class: "dl" }, ...g.routers.map((r) => {
+        const b = el("button", { class: "btn primary", type: "button" }, "Download " + r.name + ".zip");
+        b.onclick = () => download(r.name + ".zip", routerZip(r), "application/zip");
+        return b;
+      })));
+      if (repoMissing.length) out.push(el("p", { class: "status bad" }, "Couldn't load " + repoMissing.join(", ") + " from the repo, so the zips don't include them. Copy them from the files/ folder."));
+      out.push(el("p", { class: "note" }, "install.sh installs packages, backs up any file it replaces, adds the NAT rules only when missing and enables the services. It never changes your network interfaces, Tailscale login or UniFi settings."));
+    } else if (tab === "unifi") {
+      out.push(block("UniFi BGP config", "Settings → Routing → BGP", g.unifi));
+      out.push(el("p", { class: "note" }, "No route-maps needed: the routers' MED picks the active one. Remove any local-preference route-map you had for these neighbors; it would override the MED."));
+    } else if (tab === "r1" || tab === "r2") {
+      const r = g.routers[tab === "r1" ? 0 : 1];
+      const b = el("button", { class: "btn primary", type: "button" }, "Download " + r.name + ".zip");
+      b.onclick = () => download(r.name + ".zip", routerZip(r), "application/zip");
+      out.push(el("div", { class: "dl" }, b));
+      ["install.sh", "frr.conf", "keepalived.conf", "conntrackd.conf", "ts-maint.default", "interfaces.example"].forEach((f) => out.push(block(f, DEST[f], r.files[f])));
+      out.push(block("NAT rules", "added by install.sh", g.nat.map(([c, rule]) => "# " + c + "\niptables -t nat -A POSTROUTING " + rule).join("\n")));
+      out.push(el("p", { class: "note" }, "The zip also holds the files that are the same on every router: ts-maint, its systemd units, the conntrackd notify script and the systemd ordering overrides."));
+    } else if (tab === "ts") {
+      out.push(block("tailscale up", "on each router", g.tailscaleUp));
+      out.push(block("Tailscale policy", "optional: approve routes automatically", g.policy));
+    }
+    $("out").replaceChildren(...out);
+  }
+
+  async function fetchRepo() {
+    await Promise.all(G.REPO_FILES.map(async (f) => {
+      try { const r = await fetch("../files/" + f, { cache: "no-cache" }); if (!r.ok) throw 0; repo[f] = await r.text(); }
+      catch (e) { repoMissing.push(f); }
+    }));
+  }
+
+  load();
+  $("f").addEventListener("input", render);
+  $("reset").onclick = () => { try { localStorage.removeItem(KEY); } catch (e) {} load(); render(); };
+  render();
+  fetchRepo().then(render);
+})();
+</script>
+</body>
+</html>
