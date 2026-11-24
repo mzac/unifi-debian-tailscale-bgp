@@ -1,0 +1,12 @@
+[Unit]
+Description=ts-maint follow: BGP MED follows the Tailscale primary (0 primary / 200 standby)
+After=network-online.target tailscaled.service frr.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/sbin/ts-maint follow
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

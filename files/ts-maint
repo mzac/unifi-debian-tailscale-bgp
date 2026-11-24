@@ -1,0 +1,179 @@
+#!/bin/bash
+# ts-maint: role display + graceful maintenance for a pair of Tailscale subnet routers (ts-router1 / ts-router2).
+#
+# Both routers run FRR and advertise 100.64.0.0/10 to the UniFi Gateway over eBGP, and both advertise the same
+# Tailscale subnet routes + exit node. Tailscale makes ONE of them the primary subnet router (sticky until it goes
+# offline or stops advertising). Everything else follows that primary:
+#   - BGP:  `ts-maint follow` (ts-bgp-follow.service) sets the outbound MED to 0 on the Tailscale primary and 200 on
+#           the standby, so the UniFi Gateway routes LAN -> tailnet through the same node (symmetric routing).
+#   - VRRP: keepalived runs `ts-maint is-primary` as a track script, so the SNAT VIP lives on the Tailscale primary.
+#
+#   ts-maint status [--motd]   who is active for LAN -> tailnet (BGP) and tailnet -> LAN (Tailscale primary), VIP owner
+#   ts-maint drain             withdraw this node: Tailscale routes/exit node off (the peer becomes primary at once),
+#                              keepalived stopped (VIP moves at once), BGP session admin-down (UniFi withdraws at once)
+#   ts-maint undrain           restore the saved advertise state, BGP session and keepalived
+#   ts-maint reboot            drain, check the peer took over, then reboot (undrain runs at boot via
+#                              ts-maint-restore.service). Runs DETACHED, so it survives the drain cutting your SSH session
+#   ts-maint follow            loop for ts-bgp-follow.service: MED 0 when Tailscale primary, else 200
+#   ts-maint is-primary        exit 0 when this node is the Tailscale primary (keepalived track script)
+#
+# Settings: /etc/default/ts-maint (see the README); the defaults below match the README's example address plan.
+set -u
+GW=10.99.0.1                 # UniFi Gateway's address on the BGP transit VLAN
+AS=65001                     # the routers' AS
+VIP=10.99.0.10               # VRRP VIP = SNAT source for tailnet -> LAN
+VIP_DEV=ens19                # inside interface
+NAME_PREFIX=ts-router        # both routers' Tailscale hostnames start with this
+PEER_IP=                     # the other router's inside address (status only; optional)
+[ -r /etc/default/ts-maint ] && . /etc/default/ts-maint
+STATE=/var/lib/ts-maint
+mkdir -p "$STATE"
+
+self() { hostname -s; }
+
+ts_json() { tailscale status --json 2>/dev/null; }
+
+# prints: "<self_primary> <peer_name> <peer_online> <peer_primary>" (yes/no)
+ts_roles() {
+    ts_json | NAME_PREFIX="$NAME_PREFIX" python3 -c '
+import json, os, sys
+d = json.load(sys.stdin)
+pre = os.environ["NAME_PREFIX"]
+me = d.get("Self") or {}
+sp = "yes" if me.get("PrimaryRoutes") else "no"
+peer = next((p for p in (d.get("Peer") or {}).values()
+             if (p.get("HostName") or "").startswith(pre) and p.get("HostName") != me.get("HostName")), {})
+pon = "yes" if peer.get("Online") else "no"
+# The PrimaryRoutes of a peer are not visible with accept-routes off, but there are exactly two routers:
+# when this node is not primary and the peer is online, the peer is the primary.
+pp = "yes" if (peer.get("PrimaryRoutes") or (sp == "no" and pon == "yes")) else "no"
+print(sp, peer.get("HostName") or "?", pon, pp)
+' 2>/dev/null || echo "? ? ? ?"
+}
+
+bgp_state() {   # Established / Idle (admin-down) / ...
+    vtysh -c "show bgp neighbor $GW json" 2>/dev/null | python3 -c '
+import json, sys
+d = json.load(sys.stdin); n = d.get(sys.argv[1]) or {}
+print(n.get("bgpState", "?") + (" (admin-down)" if n.get("adminShutDown") else ""))
+' "$GW" 2>/dev/null || echo "?"
+}
+
+peer_bgp_up() { timeout 2 bash -c "</dev/tcp/$1/179" 2>/dev/null && echo yes || echo no; }
+
+vip_here() { ip -4 addr show dev "$VIP_DEV" | grep -q " $VIP/"; }
+
+status() {
+    local motd=${1:-} me sp peer pon pp bgp lan tn med dr=""
+    me=$(self); read -r sp peer pon pp < <(ts_roles); bgp=$(bgp_state)
+    med=$(cat "$STATE/med" 2>/dev/null || echo "?")
+    if [ "${bgp%% *}" = Established ] && [ "$med" = 0 ]; then lan="ACTIVE (MED 0)"
+    elif [ "${bgp%% *}" = Established ]; then lan="standby (MED $med)"
+    else lan="standby (BGP down)"; fi
+    [ "$sp" = yes ] && tn=ACTIVE || tn=standby
+    [ -e "$STATE/drained" ] && dr=" -- DRAINED (ts-maint undrain to return)"
+    if [ -n "$motd" ]; then
+        local role
+        if [ "$tn" = ACTIVE ] && [ "${lan%% *}" = ACTIVE ]; then role=ACTIVE
+        elif [ "$tn" = standby ] && [ "${lan%% *}" = standby ]; then role=STANDBY
+        else role=SPLIT; fi
+        echo
+        echo "  ==== $me: $role tailscale subnet router$dr"
+        echo "       tailnet -> LAN (Tailscale primary): $tn   | peer $peer online=$pon primary=$pp"
+        echo "       LAN -> tailnet (UniFi BGP route):   $lan   | BGP to $GW: $bgp"
+        echo "       SNAT VIP $VIP:              $(vip_here && echo 'owned here (VRRP master)' || echo 'on the peer')"
+        echo "       maintenance: 'ts-maint reboot' drains to the peer first (ts-maint status / drain / undrain)"
+        echo
+    else
+        echo "node:            $me$dr"
+        echo "tailnet -> LAN:  $tn (Tailscale primary routes on this node: $sp)"
+        echo "LAN -> tailnet:  $lan (BGP to $GW: $bgp)"
+        echo "peer:            $peer online=$pon primary=$pp bgp-port-reachable=$( [ -n "$PEER_IP" ] && peer_bgp_up "$PEER_IP" || echo ?)"
+        echo "SNAT VIP:        $VIP $(vip_here && echo 'OWNED here (VRRP master)' || echo 'on the peer')"
+    fi
+}
+
+drain() {
+    local me peer pon pp sp i
+    me=$(self); read -r sp peer pon pp < <(ts_roles)
+    if [ "$pon" != yes ]; then echo "REFUSING: peer $peer is not online in Tailscale; draining would cut the tailnet off" >&2; return 1; fi
+    if [ ! -e "$STATE/drained" ]; then
+        tailscale debug prefs > "$STATE/prefs.json" || { echo "cannot save Tailscale prefs" >&2; return 1; }
+        touch "$STATE/drained"
+    fi
+    echo "[1/3] Tailscale: withdrawing subnet routes + exit node (peer becomes primary)"
+    tailscale set --advertise-routes= --advertise-exit-node=false || return 1
+    # Wait until Tailscale has moved the primary (~1 s), THEN release the VIP at once: stopping keepalived sends a
+    # priority-0 advert, so the peer takes over immediately and commits the synced NAT table. Waiting for the track
+    # script instead made the VIP lag the Tailscale switch by ~6 s.
+    for i in $(seq 1 20); do
+        read -r sp peer pon pp < <(ts_roles)
+        [ "$sp" = no ] && break
+        sleep 0.5
+    done
+    echo "[2/3] keepalived stop: VIP $VIP moves to $peer now"
+    systemctl stop keepalived 2>/dev/null
+    echo "[3/3] BGP: neighbor $GW shutdown (UniFi withdraws this path now)"
+    vtysh -c "configure terminal" -c "router bgp $AS" -c "neighbor $GW shutdown" || return 1
+    echo "peer $peer primary=$pp; this node primary=$sp"
+    [ "$pp" = yes ]
+}
+
+undrain() {
+    if [ -e "$STATE/prefs.json" ]; then
+        local routes exit
+        routes=$(python3 -c 'import json,sys;p=json.load(open(sys.argv[1]));print(",".join(r for r in (p.get("AdvertiseRoutes") or []) if r not in ("0.0.0.0/0","::/0")))' "$STATE/prefs.json")
+        exit=$(python3 -c 'import json,sys;p=json.load(open(sys.argv[1]));print("true" if "0.0.0.0/0" in (p.get("AdvertiseRoutes") or []) else "false")' "$STATE/prefs.json")
+        echo "Tailscale: advertise-routes=$routes exit-node=$exit"
+        tailscale set --advertise-routes="$routes" --advertise-exit-node="$exit" || return 1
+    fi
+    echo "BGP: no neighbor $GW shutdown"
+    vtysh -c "configure terminal" -c "router bgp $AS" -c "no neighbor $GW shutdown"
+    systemctl start keepalived 2>/dev/null && echo "keepalived started (the VIP stays with the Tailscale primary)"
+    rm -f "$STATE/drained"
+}
+
+set_med() {
+    vtysh -c "configure terminal" -c "route-map ts-med permit 10" -c "set metric $1" >/dev/null 2>&1 &&
+    vtysh -c "clear bgp ipv4 unicast $GW soft out" >/dev/null 2>&1 && echo "$1" > "$STATE/med"
+}
+
+follow() {   # every 1 s: MED 0 if this node is the Tailscale primary, else 200
+    local want cur sp _
+    rm -f "$STATE/med"
+    while :; do
+        read -r sp _ _ _ < <(ts_roles)
+        [ "$sp" = yes ] && want=0 || want=200
+        cur=$(cat "$STATE/med" 2>/dev/null || echo none)
+        if [ "$sp" != "?" ] && [ "$want" != "$cur" ]; then
+            set_med "$want" && echo "tailscale primary=$sp -> MED $want"
+        fi
+        sleep 1
+    done
+}
+
+case "${1:-status}" in
+    status) status "${2:-}" ;;
+    drain) drain ;;
+    undrain) undrain ;;
+    reboot)
+        systemd-run --unit="ts-maint-reboot-$(date +%s)" --collect /usr/local/sbin/ts-maint reboot-now >/dev/null || exit 1
+        echo "drain + reboot running as a detached systemd job; your session may drop now (journalctl -u 'ts-maint-reboot-*')" ;;
+    reboot-now)
+        drain || { echo "drain failed, NOT rebooting (ts-maint undrain to restore)" >&2; exit 1; }
+        echo "peer took over; rebooting in 3 s (undrain runs at boot)"; sleep 3; systemctl reboot ;;
+    follow) follow ;;
+    is-primary)
+        read -r sp _ _ _ < <(ts_roles); [ "$sp" = yes ] ;;
+    boot-restore)   # ts-maint-restore.service: undrain if the last shutdown was a drain, and never boot with a saved
+                    # 'neighbor ... shutdown' (a 'write memory' while drained persists one)
+        if [ -e "$STATE/drained" ]; then
+            for i in $(seq 1 30); do tailscale status >/dev/null 2>&1 && break; sleep 2; done
+            undrain
+        fi
+        if grep -q "neighbor $GW shutdown" /etc/frr/frr.conf 2>/dev/null; then
+            vtysh -c "configure terminal" -c "router bgp $AS" -c "no neighbor $GW shutdown" -c "end" -c "write memory" >/dev/null &&
+                echo "removed a saved 'neighbor $GW shutdown' from frr.conf"
+        fi ;;
+    *) echo "usage: ts-maint status [--motd] | drain | undrain | reboot | follow | is-primary" >&2; exit 2 ;;
+esac

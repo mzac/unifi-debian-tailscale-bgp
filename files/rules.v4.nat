@@ -1,0 +1,15 @@
+# NAT section of /etc/iptables/rules.v4 (iptables-persistent). Keep the rest of the file as netfilter-persistent
+# saved it; tailscaled re-creates its own ts-* chains when it starts.
+*nat
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+-A POSTROUTING -j ts-postrouting
+# LAN -> tailnet: appear as this router's Tailscale IP (peers without your subnet routes can answer)
+-A POSTROUTING -s 10.0.0.0/8 -o tailscale0 -j MASQUERADE
+# exit-node traffic: tailnet -> internet via the WAN interface
+-A POSTROUTING -s 100.64.0.0/10 -o ens18 -j MASQUERADE
+# tailnet -> LAN: SNAT to the VRRP VIP (replaces Tailscale's own per-node SNAT; synced by conntrackd)
+-A POSTROUTING -s 100.64.0.0/10 -o ens19 -j SNAT --to-source 10.99.0.10
+COMMIT

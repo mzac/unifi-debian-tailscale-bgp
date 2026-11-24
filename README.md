@@ -1,158 +1,134 @@
-# UniFi + Debian/FRR + Tailscale (BGP)
+# UniFi + Debian/FRR + Tailscale (BGP, HA)
 
-Run Tailscale as a subnet router behind a UniFi Gateway using two
-redundant Debian VMs. FRR's `bgpd` peers with the UniFi Gateway over eBGP; BGP path
-attributes pick one VM as active and one as standby, and failover is
-automatic when the active VM drops its session.
+Run Tailscale as a highly available subnet router (and exit node) behind a UniFi Gateway, using two Debian VMs.
 
-> **This repo used to document a pfSense + OSPF design.** It has been
-> rewritten end-to-end for Debian + FRR + eBGP. If you need the old guide,
-> check out a commit before this rewrite — git history is intact.
+- FRR on each VM peers with the UniFi Gateway over **eBGP** and advertises the Tailscale range `100.64.0.0/10`.
+- Tailscale picks one VM as the **primary subnet router**. Everything else **follows that primary**:
+  - a small loop sets the BGP **MED** so the UniFi Gateway sends LAN → tailnet traffic through the same VM
+    (symmetric routing);
+  - a **VRRP VIP** (keepalived) that tailnet → LAN traffic is SNATed to moves to the same VM.
+- **conntrackd** copies the NAT table to the standby, so open connections survive a failover.
+- `ts-maint` drains a VM before maintenance (`ts-maint reboot`), so planned reboots are seamless.
+
+> **History.** This repo first documented a pfSense + OSPF design, then a Debian + FRR design where the UniFi
+> Gateway preferred one VM with a fixed local-preference. This version replaces the fixed preference with
+> "follow the Tailscale primary" and adds the shared SNAT VIP and connection sync. See
+> [Migrating from the previous version](#migrating-from-the-previous-version-of-this-guide).
+
+All addresses below are **examples**: substitute your own.
 
 ## Architecture
 
 ![Network topology](images/network-topology.svg)
 
-- `ts-home1` (active) and `ts-home2` (standby) are Debian 13 (Trixie) VMs
-  running on separate Proxmox hosts.
-- `ens18` is the WAN interface on **VLAN 220** (DHCP). Tailscale uses this
-  to reach the tailnet.
-- `ens19` is the inside interface on **VLAN 221**, a /24 BGP transit subnet.
-  The UniFi Gateway peers with each VM across this VLAN.
-- The VMs are **AS 65001**; the UniFi Gateway is **AS 65000**. eBGP exchanges
-  exactly two aggregates: `192.168.0.0/16` (LAN) and `100.64.0.0/10`
-  (Tailscale CGNAT).
-- The Tailscale daemon installs per-peer `/32` routes inside the
-  `100.64.0.0/10` aggregate. `iptables` masquerades LAN traffic to the VM's
-  Tailscale IP on the way out so peers that haven't accepted your subnet
-  routes can still send return traffic.
+| Piece | Runs on | Job |
+|---|---|---|
+| Tailscale | both VMs | Same subnet routes + exit node on both; Tailscale makes one VM **primary** (sticky until it goes offline or stops advertising). |
+| FRR (`bgpd`) | both VMs | Advertises `100.64.0.0/10` (a Null0 static, redistributed) to the UniFi Gateway; learns the LAN routes. |
+| `ts-maint follow` | both VMs | Every second: MED **0** on the Tailscale primary, **200** on the standby. The UniFi Gateway takes the lowest MED, so LAN → tailnet goes to the primary. |
+| keepalived | both VMs | VRRP VIP `10.99.0.10`; a track script adds +50 priority on the Tailscale primary, so the VIP follows it. |
+| iptables | both VMs | tailnet → LAN is SNATed to the VIP; LAN → tailnet is masqueraded to the VM's Tailscale IP; exit-node traffic is masqueraded to the WAN. |
+| conntrackd | both VMs | FTFW sync of the conntrack/NAT table over the transit VLAN; the new VRRP master commits it into the kernel. |
+| `ts-maint` | both VMs | `status`, `drain`, `undrain`, `reboot` (drain first, then reboot). |
 
-### BGP design
+![Traffic flows](images/traffic-flows.svg)
 
-![BGP peering detail](images/bgp-topology.svg)
+### Why everything follows the Tailscale primary
 
-| Direction | Prefix(es) | Modifier | Effect |
-|---|---|---|---|
-| `ts-home1` → UniFi Gateway | `100.64.0.0/10` | default attrs | preferred at UniFi Gateway |
-| `ts-home2` → UniFi Gateway | `100.64.0.0/10` | UniFi Gateway applies `local-preference 50` (inbound) | demoted at UniFi Gateway |
-| UniFi Gateway → `ts-home1` | `192.168.0.0/16` | default attrs | normal return path |
-| UniFi Gateway → `ts-home2` | `192.168.0.0/16` | UniFi Gateway applies `metric 200` (MED, outbound) | tagged as standby |
+Tailscale decides on its own which subnet router is primary, and there is no setting to prefer one. A remote
+tailnet client only accepts subnet traffic from the node it currently considers primary. If the UniFi Gateway sent
+LAN → tailnet traffic through the *other* VM, replies would be dropped. So instead of pinning a preferred VM in
+BGP, the VMs **measure** who is primary and steer BGP (MED) and the SNAT VIP to match. When Tailscale fails over,
+both follow within about a second.
 
-`prefix-list lan` permits `192.168.0.0/16 ge 16` only; `prefix-list tailscale`
-permits `100.64.0.0/10 ge 10` only. Both lists are mirrored on the UniFi Gateway
-and on the VMs so leaked specifics from either side are dropped. BGP timers
-are `3 9` (keepalive 3 s, hold 9 s) on every neighbor, giving sub-10-second
-failover.
+### Why SNAT to a shared VIP (and not Tailscale's own SNAT, or no SNAT)
 
-## Address Plan
-
-| Element | Value |
+| Option | Result |
 |---|---|
-| LAN aggregate (multiple VLANs) | `192.168.0.0/16` |
-| WAN transit VLAN | `192.168.220.0/24` (VLAN 220, DHCP) |
-| BGP transit VLAN | `192.168.221.0/24` (VLAN 221) |
-| UniFi Gateway inside peer | `192.168.221.1` |
-| `ts-home1` inside | `192.168.221.11` |
-| `ts-home2` inside | `192.168.221.12` |
-| Tailscale CGNAT | `100.64.0.0/10` |
-| UniFi Gateway AS | `65000` |
-| Debian VMs AS | `65001` |
+| Tailscale's default SNAT (`--snat-subnet-routes=true`) | LAN hosts see the VM's own address. A failover changes the source address, so **every open session drops**. |
+| No SNAT (`--snat-subnet-routes=false`, routed) | LAN hosts see the real `100.x` source and sessions survive. But **LAN hosts that also run Tailscale** answer `100.x` through their *own* `tailscale0`, and the client drops those replies (wrong node). |
+| **SNAT to a VRRP VIP + conntrackd (this guide)** | LAN hosts always see `10.99.0.10` and reply over the LAN, Tailscale hosts included. The VIP and the NAT table move together, so sessions survive a failover. |
+
+Exit-node (internet) traffic is still masqueraded per VM on the WAN interface, so exit-node sessions do drop on
+failover; clients reconnect.
+
+## Address plan (example)
+
+| Element | Example value |
+|---|---|
+| LAN aggregate (all your VLANs) | `10.0.0.0/8` |
+| LAN subnets you advertise to the tailnet | e.g. `10.10.0.0/24`, `10.20.0.0/24` |
+| WAN VLAN for the VMs (DHCP, internet egress) | VLAN 98, `10.98.0.0/24` |
+| BGP transit VLAN | VLAN 99, `10.99.0.0/24` |
+| UniFi Gateway on the transit VLAN | `10.99.0.1` |
+| `ts-router1` / `ts-router2` (ens19) | `10.99.0.11` / `10.99.0.12` |
+| SNAT VIP (VRRP) | `10.99.0.10` |
+| Tailscale range | `100.64.0.0/10` |
+| UniFi Gateway AS / VM AS | `65000` / `65001` |
 
 ## Requirements
 
-- A UniFi Gateway running a UniFi OS version with FRR/BGP support (works on all current models).
-- A virtualisation host (Proxmox is assumed here; anything that supports
-  Debian 13 will work). Two hosts if you want true HA across hardware.
-- A Tailscale tailnet and access to the admin console for route approval.
-- Two VLANs reachable from the UniFi Gateway — one for WAN egress to the VMs and
-  one for the BGP transit subnet.
+- A UniFi Gateway with BGP support (UniFi OS `Settings → Routing → BGP`).
+- Two VMs, ideally on two different hypervisor hosts (Proxmox is assumed here).
+- A Tailscale tailnet and admin access to approve routes.
+- Two VLANs reachable from the UniFi Gateway: a WAN VLAN for the VMs' internet egress, and the BGP transit VLAN.
 
-## Not Covered
+Not covered: building the UniFi network or VLANs, creating the tailnet, Tailscale clients, tailnet policy design
+(see <https://tailscale.com/kb/1337/acl-syntax>).
 
-- Installing the UniFi Gateway or provisioning VLANs on UniFi.
-- Setting up a Tailscale tailnet.
-- Installing Tailscale clients on remote devices.
-- ACLs in Tailscale — see <https://tailscale.com/kb/1337/acl-syntax>.
+## UniFi Gateway configuration
 
-## Important Notes
+> The UniFi Gateway's `/etc/frr/frr.conf` **cannot** be edited on the CLI: the controller overwrites it. Paste the
+> BGP config into the UniFi UI (`Settings → Routing → BGP`).
 
-> The UniFi Gateway's `/etc/frr/frr.conf` **cannot** be edited directly on the CLI —
-> the controller will overwrite it. The BGP config below must be pasted into
-> the UniFi GUI (`Settings → Routing → BGP`) so the controller applies it
-> through the supported path.
-
-## UniFi Gateway Configuration
-
-### BGP
-
-In the UniFi GUI, go to `Settings → Routing → BGP` and paste the following.
-Replace `192.168.0.1` with the router-id you want to advertise; the value
-below is a sensible default if your primary LAN sits in `192.168.0.0/24`.
+Both VMs are configured the same way: the MED they send decides which one wins. **Do not** add a local-preference
+route-map for either VM: local-preference outranks MED and would pin the path, breaking the symmetric routing.
 
 ```
 router bgp 65000
- bgp router-id 192.168.0.1
- bgp listen limit 10
- neighbor 192.168.221.11 remote-as 65001
- neighbor 192.168.221.11 timers 3 9
- neighbor 192.168.221.12 remote-as 65001
- neighbor 192.168.221.12 timers 3 9
+ bgp router-id 10.10.0.1
+ neighbor 10.99.0.11 remote-as 65001
+ neighbor 10.99.0.11 timers 3 9
+ neighbor 10.99.0.12 remote-as 65001
+ neighbor 10.99.0.12 timers 3 9
  !
  address-family ipv4 unicast
   redistribute connected
-  neighbor 192.168.221.11 soft-reconfiguration inbound
-  neighbor 192.168.221.11 prefix-list tailscale in
-  neighbor 192.168.221.11 prefix-list lan out
-  neighbor 192.168.221.12 soft-reconfiguration inbound
-  neighbor 192.168.221.12 prefix-list tailscale in
-  neighbor 192.168.221.12 prefix-list lan out
-  neighbor 192.168.221.12 route-map ts-home2-in in
-  neighbor 192.168.221.12 route-map ts-home2-out out
+  neighbor 10.99.0.11 soft-reconfiguration inbound
+  neighbor 10.99.0.11 prefix-list tailscale in
+  neighbor 10.99.0.11 prefix-list lan out
+  neighbor 10.99.0.12 soft-reconfiguration inbound
+  neighbor 10.99.0.12 prefix-list tailscale in
+  neighbor 10.99.0.12 prefix-list lan out
  exit-address-family
 exit
 !
-ip prefix-list lan seq 10 permit 192.168.0.0/16 ge 16
+ip prefix-list lan seq 10 permit 10.0.0.0/8 ge 8
 ip prefix-list tailscale seq 10 permit 100.64.0.0/10 ge 10
-!
-route-map ts-home2-in permit 10
- set local-preference 50
-!
-route-map ts-home2-out permit 10
- set metric 200
 ```
 
-## VM Build (Proxmox)
+Both paths come from the same neighbor AS (65001), so the gateway compares MED without extra settings. The prefix
+lists keep each side to its aggregate: only LAN prefixes go to the VMs, and only the Tailscale aggregate comes back.
 
-Create two VMs with identical specs, one per Proxmox host:
+## VM build (Proxmox)
+
+Two identical VMs, one per host:
 
 | Setting | Value |
 |---|---|
-| OS | Debian 13 Trixie (netinstall) |
-| Machine | q35 |
-| BIOS | UEFI (OVMF) |
-| CPU | 1 vCPU |
-| RAM | 1 GB |
-| Disk | 8 GB |
-| `net0` (`ens18`) | VirtIO bridge → VLAN 220 (WAN) |
-| `net1` (`ens19`) | VirtIO bridge → VLAN 221 (inside) |
+| OS | Debian 13 (Trixie), minimal install |
+| Machine / BIOS | q35 / UEFI (OVMF) |
+| CPU / RAM / disk | 1 vCPU / 1 GB / 8 GB |
+| `net0` (`ens18`) | VirtIO → WAN VLAN 98 (DHCP; reserve the address in UniFi) |
+| `net1` (`ens19`) | VirtIO → transit VLAN 99 |
 
-Install with minimal/standard system utilities only — no desktop.
-
-## Debian Base Configuration
-
-Do everything below on **both** VMs unless noted.
-
-### Hostname
+## Debian base configuration (both VMs)
 
 ```bash
-# On ts-home1:
-hostnamectl set-hostname ts-home1
-
-# On ts-home2:
-hostnamectl set-hostname ts-home2
+hostnamectl set-hostname ts-router1      # ts-router2 on the other VM
 ```
 
-### `/etc/network/interfaces` — `ts-home1`
+`/etc/network/interfaces` (`ts-router2`: `10.99.0.12`):
 
 ```
 auto lo
@@ -163,34 +139,14 @@ iface ens18 inet dhcp
 
 auto ens19
 iface ens19 inet static
-    address 192.168.221.11
+    address 10.99.0.11
     netmask 255.255.255.0
 ```
 
-### `/etc/network/interfaces` — `ts-home2`
+> No gateway on `ens19`: the default route comes from WAN DHCP, which is how Tailscale reaches the internet. A
+> gateway on the inside interface black-holes tailnet traffic.
 
-```
-auto lo
-iface lo inet loopback
-
-auto ens18
-iface ens18 inet dhcp
-
-auto ens19
-iface ens19 inet static
-    address 192.168.221.12
-    netmask 255.255.255.0
-```
-
-> No default gateway on `ens19` — WAN (`ens18`) DHCP provides the default
-> route. Tailscale egresses via WAN. Adding a gateway to the inside
-> interface will black-hole tailnet traffic.
-
-```bash
-systemctl restart networking
-```
-
-### IP Forwarding
+IP forwarding:
 
 ```bash
 cat > /etc/sysctl.d/99-forwarding.conf << 'EOF'
@@ -198,149 +154,50 @@ net.ipv4.ip_forward = 1
 net.ipv4.conf.all.forwarding = 1
 net.ipv6.conf.all.forwarding = 1
 EOF
-
 sysctl --system
 ```
 
-## FRR Installation
+Packages:
 
 ```bash
-apt update && apt install -y frr frr-pythontools
+apt update && apt install -y frr frr-pythontools keepalived conntrackd iptables-persistent ethtool python3
 ```
 
-### `/etc/frr/daemons`
+## FRR
 
-Set `zebra` and `bgpd` to `yes`; leave the rest as-is:
+In `/etc/frr/daemons` set `bgpd=yes` (zebra, staticd and mgmtd start on their own).
 
-```
-zebra=yes
-bgpd=yes
-```
-
-## FRR Configuration
-
-### `/etc/frr/frr.conf` — `ts-home1` (active)
+`/etc/frr/frr.conf` for `ts-router1` is [`files/frr.ts-router1.conf`](files/frr.ts-router1.conf) (and
+[`files/frr.ts-router2.conf`](files/frr.ts-router2.conf)). Both are identical except for the router-id and
+`update-source`. The important parts:
 
 ```
-frr version 9.1
-frr defaults traditional
-hostname ts-home1
-service integrated-vtysh-config
-!
-ip route 100.64.0.0/10 Null0
-!
-router bgp 65001
- bgp router-id 192.168.221.11
- no bgp network import-check
- neighbor 192.168.221.1 remote-as 65000
- neighbor 192.168.221.1 update-source 192.168.221.11
- neighbor 192.168.221.1 timers 3 9
- !
- address-family ipv4 unicast
-  redistribute static route-map tailscale
-  no neighbor 192.168.221.1 send-community
-  neighbor 192.168.221.1 soft-reconfiguration inbound
-  neighbor 192.168.221.1 prefix-list lan in
-  neighbor 192.168.221.1 prefix-list tailscale out
- exit-address-family
-exit
-!
-ip prefix-list lan seq 10 permit 192.168.0.0/16 ge 16
-ip prefix-list tailscale seq 10 permit 100.64.0.0/10 ge 10
-!
-route-map tailscale permit 10
- match ip address prefix-list tailscale
-exit
-!
-```
-
-### `/etc/frr/frr.conf` — `ts-home2` (standby)
-
-```
-frr version 9.1
-frr defaults traditional
-hostname ts-home2
-service integrated-vtysh-config
-!
-ip route 100.64.0.0/10 Null0
-!
-router bgp 65001
- bgp router-id 192.168.221.12
- bgp default local-preference 200
- no bgp network import-check
- neighbor 192.168.221.1 remote-as 65000
- neighbor 192.168.221.1 update-source 192.168.221.12
- neighbor 192.168.221.1 timers 3 9
- !
- address-family ipv4 unicast
-  redistribute static route-map tailscale
-  no neighbor 192.168.221.1 send-community
-  neighbor 192.168.221.1 soft-reconfiguration inbound
-  neighbor 192.168.221.1 prefix-list lan in
-  neighbor 192.168.221.1 prefix-list tailscale out
-  neighbor 192.168.221.1 route-map gateway-in in
-  neighbor 192.168.221.1 route-map gateway-out out
- exit-address-family
-exit
-!
-ip prefix-list lan seq 10 permit 192.168.0.0/16 ge 16
-ip prefix-list tailscale seq 10 permit 100.64.0.0/10 ge 10
-!
-route-map gateway-in permit 10
- set local-preference 50
-exit
-!
-route-map gateway-out permit 10
+ip route 100.64.0.0/10 Null0                      ! origin of the advertised aggregate
+route-map ts-med permit 10                        ! rewritten every second by ts-maint follow
  set metric 200
-exit
-!
-route-map tailscale permit 10
- match ip address prefix-list tailscale
-exit
-!
+router bgp 65001
+ neighbor 10.99.0.1 timers 3 9
+ address-family ipv4 unicast
+  redistribute static route-map tailscale
+  neighbor 10.99.0.1 prefix-list lan in
+  neighbor 10.99.0.1 prefix-list tailscale out
+  neighbor 10.99.0.1 route-map ts-med out
 ```
 
-### Permissions and Start
-
-FRR runs as the `frr` user and will silently load an empty config if it
-can't read `frr.conf`. Set ownership before starting:
-
 ```bash
-chown frr:frr /etc/frr/frr.conf
-chmod 640 /etc/frr/frr.conf
+chown frr:frr /etc/frr/frr.conf && chmod 640 /etc/frr/frr.conf
 systemctl enable --now frr
 ```
 
-### Verify the FRR Version Match
+The `frr version` line must match `vtysh --version`, or FRR ignores the file.
 
-The version on line 1 of `frr.conf` must match the installed version or FRR
-will refuse to load the config:
-
-```bash
-vtysh --version
-```
-
-If it reports something like `9.1.2`, update line 1 to `frr version 9.1.2`
-and restart:
-
-```bash
-systemctl restart frr
-```
-
-## Tailscale Installation
+## Tailscale
 
 ```bash
 curl -fsSL https://tailscale.com/install.sh | sh
 ```
 
-### UDP GRO Forwarding
-
-Tailscale will warn about suboptimal UDP GRO on `ens18` if this isn't set.
-Install `ethtool` and apply the tunable persistently:
-
-```bash
-apt install -y ethtool
-```
+UDP GRO forwarding on the WAN interface (Tailscale warns without it):
 
 ```bash
 cat > /etc/systemd/system/tailscale-ethtool.service << 'EOF'
@@ -357,300 +214,189 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
-
-systemctl daemon-reload
-systemctl enable --now tailscale-ethtool
+systemctl daemon-reload && systemctl enable --now tailscale-ethtool
 ```
 
-### Bring Up Tailscale
-
-Replace the `--advertise-routes` list with the LAN subnets you actually
-want reachable from the tailnet:
+Bring it up with the **same routes on both VMs** and Tailscale's own SNAT **off** (the VIP SNAT below replaces it):
 
 ```bash
 tailscale up \
-  --advertise-routes=192.168.0.0/24,192.168.10.0/24,192.168.20.0/24,192.168.221.0/24 \
+  --advertise-routes=10.10.0.0/24,10.20.0.0/24,10.99.0.0/24 \
   --advertise-exit-node \
+  --snat-subnet-routes=false \
+  --accept-routes=false \
   --ssh
 ```
 
-The command prints an auth URL. Open it in a browser to authenticate the
-node. Repeat on the second VM — each node needs its own auth.
+Each VM prints its own login URL. Then, in the admin console (**Machines →** each VM **→ Edit route settings**),
+approve every advertised subnet and **Use as exit node**. Or let the tailnet policy approve them automatically:
 
-### Approve Routes in the Tailscale Admin Console
-
-1. Go to <https://login.tailscale.com/admin/machines>.
-2. For each of `ts-home1` and `ts-home2`: three-dot menu → **Edit route
-   settings** → enable all advertised subnet routes and **Use as exit node**.
-
-![Tailscale route settings](images/tailscale-routes.png)
-
-### Disable Route Acceptance on the VMs
-
-These VMs advertise routes; they should not absorb routes from other
-Tailscale nodes into the kernel routing table.
-
-```bash
-tailscale set --accept-routes=false
+```jsonc
+"autoApprovers": {
+  "routes":   { "10.0.0.0/8": ["tag:subnet-router"] },
+  "exitNode": ["tag:subnet-router"],
+},
 ```
 
-## NAT Configuration
+Use hostnames that start with the same prefix (`ts-router1`, `ts-router2`): `ts-maint` finds its peer by it.
 
-LAN traffic heading into the tailnet is masqueraded as the VM's Tailscale
-IP so peers without your subnet routes accepted (phones, laptops, exit-node
-users) can route return traffic. Peers that explicitly accept your subnet
-routes will work without NAT, but masquerading is worth keeping for
-robustness.
+> `tailscale status` shows a health warning, "snat-subnet-routes is disabled while advertising as an exit node".
+> That's expected here: the iptables rules below do the NAT. If you monitor Tailscale health, exclude that message.
 
-```bash
-apt install -y iptables-persistent
+## NAT (iptables)
 
-iptables -t nat -A POSTROUTING -s 192.168.0.0/16 -o tailscale0 -j MASQUERADE
+Add these to the `*nat` table in `/etc/iptables/rules.v4` (full section:
+[`files/rules.v4.nat`](files/rules.v4.nat)), then `netfilter-persistent reload`:
 
-netfilter-persistent save
+```
+# LAN -> tailnet: appear as this VM's Tailscale IP (peers without your subnet routes can answer)
+-A POSTROUTING -s 10.0.0.0/8 -o tailscale0 -j MASQUERADE
+# exit node: tailnet -> internet via WAN
+-A POSTROUTING -s 100.64.0.0/10 -o ens18 -j MASQUERADE
+# tailnet -> LAN: SNAT to the shared VIP (state synced by conntrackd)
+-A POSTROUTING -s 100.64.0.0/10 -o ens19 -j SNAT --to-source 10.99.0.10
 ```
 
-`tailscale0` is the daemon's interface on Linux. The rule masquerades to
-the VM's current Tailscale IP automatically — no hardcoded `100.64.x.x`.
+The SNAT rule is harmless on the standby: it only carries traffic once it owns the VIP and is the Tailscale primary.
 
-Verify:
+## ts-maint (role, MED follow, drain)
+
+Install on both VMs:
+
+| File | Install as |
+|---|---|
+| [`files/ts-maint`](files/ts-maint) | `/usr/local/sbin/ts-maint` (mode 0755) |
+| [`files/ts-maint.default`](files/ts-maint.default) | `/etc/default/ts-maint` (set `PEER_IP` to the *other* VM) |
+| [`files/ts-bgp-follow.service`](files/ts-bgp-follow.service) | `/etc/systemd/system/` |
+| [`files/ts-maint-restore.service`](files/ts-maint-restore.service) | `/etc/systemd/system/` |
+| [`files/ts-role.sh`](files/ts-role.sh) | `/etc/profile.d/ts-role.sh` (optional login banner, also shown over Tailscale SSH) |
 
 ```bash
-iptables -t nat -L POSTROUTING -v --line-numbers
+systemctl daemon-reload
+systemctl enable --now ts-bgp-follow ts-maint-restore
+ts-maint status
 ```
 
-You should see a `MASQUERADE` rule with `tailscale0` as the output
-interface and `192.168.0.0/16` as the source.
+| Command | What it does |
+|---|---|
+| `ts-maint status` | Tailscale role, BGP state and MED, peer, who owns the VIP. |
+| `ts-maint drain` | Withdraws this VM's Tailscale routes and exit node (the peer becomes primary at once), stops keepalived (the VIP moves at once), shuts the BGP session (the gateway withdraws at once). Refuses if the peer is offline. |
+| `ts-maint undrain` | Puts back the saved routes, BGP session and keepalived. |
+| `ts-maint reboot` | Drain, check that the peer took over, reboot. Runs as a detached systemd job, because the drain can cut the SSH session you started it from. At boot, `ts-maint-restore` undrains. |
+
+> Don't run `write memory` in FRR while a VM is drained: it saves the `neighbor … shutdown`. `ts-maint-restore`
+> removes a saved shutdown at boot anyway.
+
+## keepalived (the SNAT VIP)
+
+`/etc/keepalived/keepalived.conf`: [`files/keepalived.ts-router1.conf`](files/keepalived.ts-router1.conf) /
+[`files/keepalived.ts-router2.conf`](files/keepalived.ts-router2.conf). Both VMs start at priority 100. The track
+script `ts-maint is-primary` adds 50 on the Tailscale primary and preempt is on, so the VIP always moves to the
+primary. Unicast VRRP between the two inside addresses; the state changes call the conntrackd script below.
+
+## conntrackd (connection sync)
+
+| File | Install as |
+|---|---|
+| [`files/conntrackd.ts-router1.conf`](files/conntrackd.ts-router1.conf) / [`…ts-router2.conf`](files/conntrackd.ts-router2.conf) | `/etc/conntrackd/conntrackd.conf`; fill in this VM's WAN and Tailscale IPs under `Address Ignore` |
+| [`files/primary-backup.sh`](files/primary-backup.sh) | `/etc/conntrackd/primary-backup.sh` (mode 0755) |
+| [`files/conntrackd.service.override.conf`](files/conntrackd.service.override.conf) | `/etc/systemd/system/conntrackd.service.d/override.conf` |
+| [`files/keepalived.service.override.conf`](files/keepalived.service.override.conf) | `/etc/systemd/system/keepalived.service.d/override.conf` |
+
+`primary-backup.sh` is the conntrack-tools example script with **one change**. When conntrackd isn't answering,
+the original removes the lock file and launches its own `conntrackd -d` outside systemd. This version runs
+`systemctl start conntrackd` instead, so there's never a second, unmanaged copy.
+
+The two systemd overrides set the start order: **network up → conntrackd → keepalived.** Without them, conntrackd
+can start before `ens19` has its address and fail ("can't open channel socket: Cannot assign requested address"),
+using up its restarts in one second. keepalived's script then started a second copy, and the unit stayed "failed".
+
+```bash
+mkdir -p /etc/systemd/system/conntrackd.service.d /etc/systemd/system/keepalived.service.d
+# copy the files above into place, then:
+systemctl daemon-reload
+systemctl enable --now conntrackd keepalived
+```
 
 ## Verification
 
-### FRR Startup
+```bash
+ts-maint status                                    # one ACTIVE, one standby; the VIP on the ACTIVE one
+vtysh -c "show bgp summary"                        # neighbor 10.99.0.1 Established
+vtysh -c "show ip bgp neighbors 10.99.0.1 advertised-routes"   # 100.64.0.0/10, metric 0 (primary) / 200 (standby)
+ip -4 addr show dev ens19                          # 10.99.0.10 only on the primary
+iptables -t nat -S POSTROUTING                     # the three rules above
+systemctl --failed                                 # nothing
+pgrep -a conntrackd                                # exactly ONE process, started by systemd
+conntrackd -s                                      # primary: "cache internal" ~= standby: "cache external"
+```
+
+On the UniFi Gateway (SSH):
 
 ```bash
-journalctl -u frr --no-pager | tail -30
+vtysh -c "show ip bgp 100.64.0.0/10"               # both paths; best = metric 0
 ```
 
-All four daemons should report `state -> up`:
+## Failover behaviour
 
-```
-watchfrr: zebra state -> up
-watchfrr: mgmtd state -> up
-watchfrr: bgpd state -> up
-watchfrr: staticd state -> up
-watchfrr: all daemons up, doing startup-complete notify
-```
+![Failover sequence](images/failover.svg)
 
-These `NB_OP_CHANGE` messages appear on every restart and are benign —
-they're a race between `zebra` and `mgmtd` during startup with no
-operational impact:
-
-```
-zebra: NB_OP_CHANGE: oper_walk_done: ERROR: Error sending notification message for path: /frr-interface:lib/interface[name="ens18"]/state
-```
-
-The line below confirms the UniFi Gateway pushed its full table and the session
-is up:
-
-```
-bgpd: rcvd End-of-RIB for IPv4 Unicast from 192.168.221.1 in vrf default
-```
-
-### BGP
-
-```bash
-# Session — 192.168.221.1 should be in Established
-vtysh -c "show bgp summary"
-
-# Full BGP table — 100.64.0.0/10 must be present once Tailscale is up
-vtysh -c "show ip bgp"
-
-# What UniFi Gateway is sending us (your LAN prefixes)
-vtysh -c "show ip bgp neighbors 192.168.221.1 received-routes"
-
-# What we're advertising back (should be 100.64.0.0/10)
-vtysh -c "show ip bgp neighbors 192.168.221.1 advertised-routes"
-```
-
-### Routing
-
-```bash
-# Blackhole route for the Tailscale aggregate — needed for redistribution
-ip route show 100.64.0.0/10
-
-# Full kernel routing table
-ip route show
-```
-
-### Tailscale
-
-```bash
-tailscale status
-tailscale status --peers=false
-```
-
-### From the UniFi Gateway
-
-SSH to the gateway and confirm both neighbors are up and `ts-home1` is
-preferred (lower MED received, higher local-preference):
-
-```bash
-vtysh -c "show bgp summary"
-vtysh -c "show ip bgp 100.64.0.0/10"
-```
-
-## Tailscale DNS (optional)
-
-To resolve tailnet hostnames from LAN clients, forward `*.ts.net` (or your
-tailnet's MagicDNS domain) to Quad100. On a UniFi-managed network, add a
-domain override to whatever resolver your LAN uses; if you happen to run
-Unbound somewhere, the entry looks like:
-
-- **Domain:** `ts.net` (or your tailnet's MagicDNS domain)
-- **Lookup Server IP:** `100.100.100.100`
-
-References:
-
-- <https://tailscale.com/kb/1081/magicdns>
-- <https://tailscale.com/kb/1381/what-is-quad100>
-
-## Watchdog Script
-
-The script below checks the four things most likely to silently break
-subnet routing — wedged Tailscale daemon, missing NAT rule, missing
-blackhole route, downed BGP session — and restarts the relevant service.
-Before relying on it, look at logs when things fail so you understand the
-actual root cause:
-
-```bash
-journalctl -u tailscale --no-pager | tail -30
-journalctl -u frr --no-pager | tail -30
-```
-
-### Install
-
-```bash
-cat > /usr/local/bin/tailscale-watchdog.sh << 'EOF'
-#!/bin/bash
-
-LOG="logger -t tailscale-watchdog"
-
-if ! tailscale status > /dev/null 2>&1; then
-    $LOG "Tailscale unresponsive, restarting"
-    systemctl restart tailscale
-    sleep 5
-fi
-
-if ! ip route show 100.64.0.0/10 | grep -q Null0; then
-    $LOG "Blackhole route missing, restarting FRR"
-    systemctl restart frr
-fi
-
-if ! iptables -t nat -L POSTROUTING | grep -q "tailscale0.*MASQUERADE\|MASQUERADE.*tailscale0"; then
-    $LOG "NAT rule missing, re-applying"
-    iptables -t nat -A POSTROUTING -s 192.168.0.0/16 -o tailscale0 -j MASQUERADE
-fi
-
-if ! vtysh -c "show bgp summary" | grep -q "192.168.221.1.*Established\|192.168.221.1.*[0-9]*:[0-9]*:[0-9]*"; then
-    $LOG "BGP session down, restarting FRR"
-    systemctl restart frr
-fi
-EOF
-
-chmod +x /usr/local/bin/tailscale-watchdog.sh
-```
-
-### Schedule
-
-```bash
-echo "*/5 * * * * root /usr/local/bin/tailscale-watchdog.sh" > /etc/cron.d/tailscale-watchdog
-```
-
-Runs every 5 minutes. Logs go to syslog under the `tailscale-watchdog` tag:
-
-```bash
-grep tailscale-watchdog /var/log/syslog
-```
+| Event | What happens |
+|---|---|
+| `ts-maint reboot` / `drain` (planned) | The Tailscale primary moves in about 1 s, the VIP immediately after (keepalived stopped), the gateway path at once (BGP shutdown). conntrackd's commit gives the peer every NAT mapping, so tailnet → LAN sessions continue. |
+| The primary VM dies (unplanned) | Tailscale notices the node offline and promotes the other one. That detection dominates; then MED and VIP follow within about a second. The BGP hold timer is 9 s. |
+| The old primary comes back | Tailscale may **fail back** to the oldest subnet router, and there's no knob to prevent that. MED, VIP and conntrackd follow both ways, so a fail-back is a blip like a drain. |
 
 ## Troubleshooting
 
-### BGP session won't establish
+**conntrackd failed after a reboot / "1 failed unit(s): conntrackd.service".** The systemd overrides are missing.
+Check `pgrep -a conntrackd`: a copy started by keepalived's script runs with `-d`. Install the overrides and the
+patched script, stop the stray copy (`pkill -f 'conntrackd .* -d$'`), then `systemctl reset-failed conntrackd &&
+systemctl start conntrackd`. On the standby, `conntrackd -n` asks the primary for a full resync. Never delete
+`/var/lock/conntrack.lock` while a conntrackd process exists. Stopping a second copy also removes the shared
+control socket `/var/run/conntrackd.ctl`, so restart the remaining one.
 
-- **Wrong AS or peer IP:** confirm the UniFi Gateway config has the VM in AS 65001
-  and the right neighbor IP; confirm the VM config has the UniFi Gateway as AS
-  65000 at `192.168.221.1`.
-- **Firewall on the inside VLAN:** UniFi Gateway LAN-In may block TCP/179 between
-  `192.168.221.0/24` hosts. The default UniFi LAN policy allows intra-VLAN
-  traffic; an explicit deny will kill BGP.
-- **`update-source` mismatch:** the `neighbor … update-source` line on the
-  VM must match the IP that's actually on `ens19`. If you mis-typed it, the
-  session stays in `Active` and never moves to `Established`.
-- **Config not loaded:** `vtysh -c "show running-config"` — if it's nearly
-  empty, FRR couldn't read `frr.conf`. Re-check ownership and mode.
+**Standby's external cache differs a lot from the primary's internal cache.** The sync isn't working: check UDP
+3780 between the two inside addresses, that both VMs run conntrackd, and `conntrackd -s` on both for send/receive
+errors. A few entries of difference is normal.
 
-### Session up, but no prefixes exchanged
+**BGP won't establish.** Check the AS numbers and neighbor addresses on both sides, and that `update-source`
+matches the address on `ens19`. TCP/179 must be allowed on the transit VLAN. If `vtysh -c "show running-config"`
+is nearly empty, FRR couldn't read `frr.conf` (ownership or mode).
 
-- **Prefix-list typo:** `show ip prefix-list` should list both `lan` and
-  `tailscale` with their permit entries.
-- **`bgp network import-check`:** must be disabled (`no bgp network
-  import-check`) for the static `100.64.0.0/10` to be advertised before
-  Tailscale installs anything in the kernel table.
-- **`route-map tailscale` missing:** `redistribute static route-map tailscale`
-  silently advertises nothing if the named map doesn't exist.
+**Session up but nothing exchanged.** `no bgp network import-check` must be set, the `tailscale` route-map must
+exist, and the prefix lists must match on both sides.
 
-### LAN devices can't reach tailnet hosts
+**LAN can't reach the tailnet.** On the gateway, `show ip bgp 100.64.0.0/10` must show the primary with metric 0.
+`journalctl -u ts-bgp-follow` shows the MED changes. A leftover local-preference route-map on the gateway
+overrides MED: remove it. Routes must be approved in the Tailscale admin console.
 
-- **UniFi Gateway has the route?** `vtysh -c "show ip route bgp"` on the UniFi Gateway
-  should list `100.64.0.0/10` via `192.168.221.11`. If it's via `.12`,
-  your active VM is `ts-home2` — check why `ts-home1` lost the best-path
-  race.
-- **NAT rule missing on the active VM:** see [NAT Configuration](#nat-configuration).
-- **Routes not approved in Tailscale admin console.**
-- **Custom UniFi firewall policy blocking the traffic:** UniFi's default
-  LAN-In policy lets clients route to BGP-learned destinations without an
-  explicit rule. If you've added a restrictive policy (e.g. a default-deny
-  on LAN-In or a VLAN-isolation rule), add an allow rule for traffic to
-  `100.64.0.0/10`.
+**The tailnet can't reach the LAN.** `ip -4 addr show dev ens19` on the primary must hold the VIP
+(`journalctl -u keepalived`). The SNAT rule must be present, and `tailscale debug prefs` must show `NoSNAT: true`
+(with Tailscale's SNAT on, its MASQUERADE runs first and the VIP is never used).
 
-### Tailnet hosts can't reach LAN devices
+## Migrating from the previous version of this guide
 
-- **NAT not translating:** packet-capture on `tailscale0` (with `tcpdump`)
-  and confirm outbound packets have a `100.x.x.x` source, not a
-  `192.168.x.x` one. If they don't, the masquerade rule isn't matching.
-- **Asymmetric routing:** if the active VM differs in each direction,
-  packets get dropped by stateful filters. Confirm both UniFi Gateway and tailnet
-  agree on which VM is active.
+The previous version pinned the first VM as active with a local-preference route-map on the gateway and on the
+standby VM, and used Tailscale's own SNAT. To move to this design, without an outage:
 
-### Failover slow or doesn't happen
+1. On both VMs: install keepalived, conntrackd, `ts-maint` and the overrides (sections above). Start keepalived
+   and conntrackd. Check that the VIP sits on the Tailscale primary and that the caches sync.
+2. Add the `ts-med` route-map to FRR on both VMs and enable `ts-bgp-follow`. Remove the standby's
+   `gateway-in` / `gateway-out` route-maps and `bgp default local-preference`.
+3. On the gateway: remove the standby's local-preference route-map (and the MED route-map towards it). From now
+   on the gateway follows the VMs' MED.
+4. Add the SNAT-to-VIP and exit-node MASQUERADE rules, then `tailscale set --snat-subnet-routes=false` on both VMs.
+5. Test a planned failover: keep an SSH session from a tailnet device to a LAN host open, run
+   `ts-maint reboot` on the primary, and check that the session survives.
 
-- **BGP timers:** confirm `timers 3 9` on every neighbor — defaults
-  (`60 180`) give you up to three minutes of black-holed traffic.
-- **Tailscale primary subnet router stuck:** when `ts-home1` is down
-  Tailscale should promote `ts-home2` as the primary route advertiser; if
-  it doesn't, the route advertisement on `ts-home1` may be cached. Check
-  the admin console.
+Rollback: `tailscale set --snat-subnet-routes=true` on both VMs (Tailscale's MASQUERADE comes first again), then
+optionally stop keepalived.
 
-## Migration from the pfSense + OSPF Version
+The old **watchdog cron script** was dropped. It restarted FRR whenever the BGP session was down, which fights a
+deliberate `ts-maint drain`. Use your monitoring instead: BGP state, `systemctl --failed`, `tailscale status` health.
 
-Cutover is non-disruptive because the inside-VLAN IPs (`.11`, `.12`) are
-reused — the UniFi Gateway peers with the same IPs, only the protocol underneath
-changes from OSPF to BGP.
+## Tailscale DNS (optional)
 
-1. Build `ts-home1`. Bring up FRR and Tailscale. Approve routes in the
-   admin console.
-2. Build `ts-home2`. Repeat.
-3. Confirm BGP is `Established` on both new VMs:
-   `vtysh -c "show bgp summary"`.
-4. Confirm Tailscale subnet routes are active in the admin console.
-5. Test: ping a LAN host from a tailnet peer and vice versa.
-6. Shut down the old pfSense VMs (`pf1`, `pf2`).
-7. Verify both BGP sessions stay up after pfSense is gone.
-8. Decommission the pfSense VMs.
-
-> Because the inside IPs are being reused, the pfSense VMs must be fully
-> powered off before the new VMs come up on the same IPs — otherwise you
-> get a VLAN 221 IP conflict.
-
-The UniFi Gateway BGP config replaces the OSPF config in
-`Settings → Routing`. Once the new VMs are up, remove the OSPF area from
-the UniFi controller; OSPF and BGP can coexist briefly during the cutover
-but the OSPF adjacency to pfSense will fail anyway once pfSense is off.
+To resolve tailnet names from LAN clients, forward your tailnet's MagicDNS domain (`<tailnet>.ts.net`) to
+`100.100.100.100` from whatever resolver your LAN uses. See <https://tailscale.com/kb/1081/magicdns>.

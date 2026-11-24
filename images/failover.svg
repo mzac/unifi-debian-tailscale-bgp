@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 470" width="900" height="470" font-family="'DejaVu Sans', -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+  </defs>
+  <rect width="900" height="470" fill="#ffffff"/>
+  <text x="450" y="40" text-anchor="middle" font-size="24" font-weight="700" fill="#0f172a">What happens on a failover</text>
+  <text x="450" y="66" text-anchor="middle" font-size="15" fill="#475569">Everything follows Tailscale's choice of primary, in this order</text>
+
+  <!-- steps -->
+  <g>
+    <rect x="40" y="96" width="180" height="200" rx="12" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+    <circle cx="130" cy="130" r="20" fill="#7c3aed"/><text x="130" y="137" text-anchor="middle" font-size="18" font-weight="700" fill="#fff">1</text>
+    <text x="130" y="178" text-anchor="middle" font-size="17" font-weight="700" fill="#4c1d95">Tailscale</text>
+    <text x="130" y="206" text-anchor="middle" font-size="14" fill="#4c1d95">makes router2</text>
+    <text x="130" y="226" text-anchor="middle" font-size="14" fill="#4c1d95">the primary</text>
+    <text x="130" y="270" text-anchor="middle" font-size="13" fill="#6d28d9">drain: ~1 s</text>
+    <text x="130" y="288" text-anchor="middle" font-size="13" fill="#6d28d9">crash: until offline</text>
+  </g>
+  <line x1="222" y1="196" x2="252" y2="196" stroke="#64748b" stroke-width="3" marker-end="url(#a)"/>
+  <g>
+    <rect x="256" y="96" width="180" height="200" rx="12" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+    <circle cx="346" cy="130" r="20" fill="#2563eb"/><text x="346" y="137" text-anchor="middle" font-size="18" font-weight="700" fill="#fff">2</text>
+    <text x="346" y="178" text-anchor="middle" font-size="17" font-weight="700" fill="#1e3a8a">BGP MED</text>
+    <text x="346" y="206" text-anchor="middle" font-size="14" fill="#1e3a8a">router2 → 0</text>
+    <text x="346" y="226" text-anchor="middle" font-size="14" fill="#1e3a8a">router1 → 200</text>
+    <text x="346" y="270" text-anchor="middle" font-size="13" fill="#1d4ed8">ts-maint follow</text>
+    <text x="346" y="288" text-anchor="middle" font-size="13" fill="#1d4ed8">checks every 1 s</text>
+  </g>
+  <line x1="438" y1="196" x2="468" y2="196" stroke="#64748b" stroke-width="3" marker-end="url(#a)"/>
+  <g>
+    <rect x="472" y="96" width="180" height="200" rx="12" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+    <circle cx="562" cy="130" r="20" fill="#16a34a"/><text x="562" y="137" text-anchor="middle" font-size="18" font-weight="700" fill="#fff">3</text>
+    <text x="562" y="178" text-anchor="middle" font-size="17" font-weight="700" fill="#14532d">VRRP VIP</text>
+    <text x="562" y="206" text-anchor="middle" font-size="14" fill="#14532d">10.99.0.10</text>
+    <text x="562" y="226" text-anchor="middle" font-size="14" fill="#14532d">moves to router2</text>
+    <text x="562" y="270" text-anchor="middle" font-size="13" fill="#15803d">keepalived</text>
+    <text x="562" y="288" text-anchor="middle" font-size="13" fill="#15803d">track script</text>
+  </g>
+  <line x1="654" y1="196" x2="684" y2="196" stroke="#64748b" stroke-width="3" marker-end="url(#a)"/>
+  <g>
+    <rect x="688" y="96" width="180" height="200" rx="12" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+    <circle cx="778" cy="130" r="20" fill="#d97706"/><text x="778" y="137" text-anchor="middle" font-size="18" font-weight="700" fill="#fff">4</text>
+    <text x="778" y="178" text-anchor="middle" font-size="17" font-weight="700" fill="#78350f">NAT table</text>
+    <text x="778" y="206" text-anchor="middle" font-size="14" fill="#78350f">router2 loads its</text>
+    <text x="778" y="226" text-anchor="middle" font-size="14" fill="#78350f">synced copy</text>
+    <text x="778" y="270" text-anchor="middle" font-size="13" fill="#92400e">conntrackd commit</text>
+    <text x="778" y="288" text-anchor="middle" font-size="13" fill="#92400e">(notify script)</text>
+  </g>
+
+  <!-- result -->
+  <rect x="40" y="326" width="828" height="116" rx="12" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="64" y="358" font-size="16" font-weight="700" fill="#0f172a">Result</text>
+  <text x="64" y="386" font-size="15" fill="#166534">✔ Tailnet → LAN sessions keep going (same VIP, same NAT mapping)</text>
+  <text x="64" y="410" font-size="15" fill="#166534">✔ LAN → tailnet routing switches with the MED, both directions stay on one router</text>
+  <text x="64" y="434" font-size="15" fill="#92400e">↻ Exit-node (internet) sessions reconnect: that NAT is per router</text>
+</svg>

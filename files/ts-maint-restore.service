@@ -1,0 +1,11 @@
+[Unit]
+Description=ts-maint: restore Tailscale/BGP advertisements after a drained reboot
+After=network-online.target tailscaled.service frr.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ts-maint boot-restore
+
+[Install]
+WantedBy=multi-user.target

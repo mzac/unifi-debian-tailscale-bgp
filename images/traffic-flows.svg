@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" width="900" height="520" font-family="'DejaVu Sans', -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+  </defs>
+  <rect width="900" height="520" fill="#ffffff"/>
+  <text x="450" y="40" text-anchor="middle" font-size="24" font-weight="700" fill="#0f172a">How traffic flows (through the primary)</text>
+
+  <!-- column headers -->
+  <g font-size="16" font-weight="700" text-anchor="middle" fill="#334155">
+    <text x="130" y="92">From</text><text x="450" y="92">Primary router does</text><text x="770" y="92">To · seen as</text>
+  </g>
+
+  <!-- Flow 1 -->
+  <rect x="30" y="112" width="840" height="110" rx="12" fill="#f5f3ff" stroke="#c4b5fd"/>
+  <text x="50" y="140" font-size="15" font-weight="700" fill="#5b21b6">1 · Tailnet device → LAN host</text>
+  <rect x="50" y="154" width="160" height="50" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="130" y="185" text-anchor="middle" font-size="15" fill="#4c1d95">phone / laptop</text>
+  <rect x="300" y="154" width="300" height="50" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="450" y="177" text-anchor="middle" font-size="15" font-weight="700" fill="#14532d">SNAT to VIP 10.99.0.10</text>
+  <text x="450" y="196" text-anchor="middle" font-size="13" fill="#166534">mapping copied to the standby</text>
+  <rect x="690" y="154" width="160" height="50" rx="10" fill="#f8fafc" stroke="#475569" stroke-width="2"/>
+  <text x="770" y="177" text-anchor="middle" font-size="15" fill="#0f172a">LAN host</text>
+  <text x="770" y="196" text-anchor="middle" font-size="13" fill="#475569">sees 10.99.0.10</text>
+  <line x1="212" y1="179" x2="294" y2="179" stroke="#334155" stroke-width="3" marker-end="url(#a)"/>
+  <line x1="602" y1="179" x2="684" y2="179" stroke="#334155" stroke-width="3" marker-end="url(#a)"/>
+
+  <!-- Flow 2 -->
+  <rect x="30" y="240" width="840" height="110" rx="12" fill="#eff6ff" stroke="#93c5fd"/>
+  <text x="50" y="268" font-size="15" font-weight="700" fill="#1d4ed8">2 · LAN host → tailnet device</text>
+  <rect x="50" y="282" width="160" height="50" rx="10" fill="#f8fafc" stroke="#475569" stroke-width="2"/>
+  <text x="130" y="305" text-anchor="middle" font-size="15" fill="#0f172a">LAN host</text>
+  <text x="130" y="324" text-anchor="middle" font-size="13" fill="#475569">via UniFi (MED 0)</text>
+  <rect x="300" y="282" width="300" height="50" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="450" y="305" text-anchor="middle" font-size="15" font-weight="700" fill="#14532d">MASQUERADE on tailscale0</text>
+  <text x="450" y="324" text-anchor="middle" font-size="13" fill="#166534">uses the router's own Tailscale IP</text>
+  <rect x="690" y="282" width="160" height="50" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="770" y="305" text-anchor="middle" font-size="15" fill="#4c1d95">tailnet device</text>
+  <text x="770" y="324" text-anchor="middle" font-size="13" fill="#5b21b6">sees router's 100.x</text>
+  <line x1="212" y1="307" x2="294" y2="307" stroke="#334155" stroke-width="3" marker-end="url(#a)"/>
+  <line x1="602" y1="307" x2="684" y2="307" stroke="#334155" stroke-width="3" marker-end="url(#a)"/>
+
+  <!-- Flow 3 -->
+  <rect x="30" y="368" width="840" height="110" rx="12" fill="#fffbeb" stroke="#fcd34d"/>
+  <text x="50" y="396" font-size="15" font-weight="700" fill="#92400e">3 · Tailnet device using the exit node → internet</text>
+  <rect x="50" y="410" width="160" height="50" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="130" y="441" text-anchor="middle" font-size="15" fill="#4c1d95">phone / laptop</text>
+  <rect x="300" y="410" width="300" height="50" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="450" y="433" text-anchor="middle" font-size="15" font-weight="700" fill="#14532d">MASQUERADE on ens18 (WAN)</text>
+  <text x="450" y="452" text-anchor="middle" font-size="13" fill="#166534">not synced: reconnects on failover</text>
+  <rect x="690" y="410" width="160" height="50" rx="10" fill="#f8fafc" stroke="#475569" stroke-width="2"/>
+  <text x="770" y="433" text-anchor="middle" font-size="15" fill="#0f172a">internet</text>
+  <text x="770" y="452" text-anchor="middle" font-size="13" fill="#475569">sees your public IP</text>
+  <line x1="212" y1="435" x2="294" y2="435" stroke="#334155" stroke-width="3" marker-end="url(#a)"/>
+  <line x1="602" y1="435" x2="684" y2="435" stroke="#334155" stroke-width="3" marker-end="url(#a)"/>
+
+  <text x="450" y="506" text-anchor="middle" font-size="14" fill="#475569">Both directions always use the same router, so replies are never dropped.</text>
+</svg>
